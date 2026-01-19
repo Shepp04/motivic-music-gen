@@ -1,0 +1,8 @@
+.venv/
+*.pdf
+
+# Ignore MacOS system files
+.DS_Store
+
+# Ignore Python cache files
+__pycache__/
