@@ -1,0 +1,1 @@
+# dataclasses for settings (key, bpm, bar_len, etc.)
