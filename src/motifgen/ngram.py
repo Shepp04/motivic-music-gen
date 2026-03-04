@@ -7,13 +7,14 @@ from dataclasses import dataclass
 from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 import math
 import random
-
+import re
 
 # ----------------------------
 # Harmony token utilities
 # ----------------------------
 
 Function = str  # "T" | "PD" | "D" | "UNK"
+_ALLOWED_FIGS = {"", "63", "7", "43", "42"}
 
 
 def rn_to_function(rn: str) -> Function:
@@ -75,6 +76,66 @@ def rn_to_function(rn: str) -> Function:
         return "T"
 
     return "UNK"
+
+
+def simplify_rn_figure(rn: str) -> str:
+    """
+    Canonicalise a roman numeral figure to a small vocabulary:
+      - triads: "" (root), "63" (first inversion)
+      - 7ths: "7" (root), "43" (2nd inversion), "42" (3rd inversion)
+
+    Strategy:
+      - strip whitespace
+      - remove accidentals (#/b) and other non-figure decorations
+      - extract the roman root (e.g. I, ii, V, viio)
+      - extract any digits (figures) and map to nearest allowed set
+    """
+    if not rn or rn == "N":
+        return "N"
+
+    s = rn.strip()
+
+    # Normalize diminished symbols to a plain marker we keep in root (optional)
+    s = s.replace("°", "o").replace("ø", "o")
+
+    # Remove accidentals and non-essential symbols except roman letters + digits + 'o' + '/'
+    # We'll separately extract root and digits anyway.
+    # (This will drop things like "#42" or "b7" and keep the core)
+    # NOTE: leaving '/' in lets us ignore secondary dominants later.
+    # But for simplicity, we drop everything after '/'.
+    s = s.split("/")[0]
+
+    # Extract roman root: optional 'o' at end for diminished
+    m = re.match(r"^([ivIV]+o?)", s)
+    if not m:
+        return "N"
+    root = m.group(1)
+
+    # Extract all digits after root
+    digits = re.findall(r"\d+", s[len(root):])
+    fig = "".join(digits)  # e.g. "65", "753", "532", "42", "6"
+
+    # Map figures to allowed set
+    # Triads:
+    if fig in ("", "5", "53", "532", "3"):
+        fig_out = ""
+    elif fig in ("6", "63", "64"):
+        fig_out = "63"  # collapse 6 and 64 to 63
+    # 7ths:
+    elif "42" in fig:
+        fig_out = "42"
+    elif "43" in fig:
+        fig_out = "43"
+    elif "7" in fig or "65" in fig or "75" in fig:
+        fig_out = "7"
+    else:
+        # Unknown -> default to triad root (most stable)
+        fig_out = ""
+
+    if fig_out not in _ALLOWED_FIGS:
+        fig_out = ""
+
+    return f"{root}{fig_out}"
 
 
 def majority_vote(items: Sequence[str]) -> str:
@@ -301,7 +362,10 @@ def fit_rn_distributions(
 
     for seq in rn_halfbars:
         for rn in seq:
-            f = rn_to_function(rn)
+            rn_s = simplify_rn_figure(rn)
+            if rn_s == "N":
+                continue
+            f = rn_to_function(rn_s)
             if f not in counts:
                 continue
             d = counts[f]
@@ -335,6 +399,10 @@ def train_harmony_model(
     for item in pieces:
         rn_quarters = item.get("harmony_tokens", [])
         rn_half = compress_rn_quarters_to_halfbars(rn_quarters)
+
+        rn_half = [simplify_rn_figure(r) for r in rn_half]
+        rn_half = [r for r in rn_half if r != "N"]
+        
         # drop UNK tokens for function sequence training by filtering
         func = [rn_to_function(r) for r in rn_half]
         func = [f for f in func if f in cfg.func_vocab]
