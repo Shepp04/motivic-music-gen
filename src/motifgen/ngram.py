@@ -55,6 +55,8 @@ def rn_to_function(rn: str) -> Function:
 
     # Dominant function: V* or vii°*
     if root_l == "v":
+        return "PD"
+    if root == "V":
         return "D"
     if root_l.startswith("vii"):
         return "D"
@@ -402,7 +404,7 @@ def train_harmony_model(
 
         rn_half = [simplify_rn_figure(r) for r in rn_half]
         rn_half = [r for r in rn_half if r != "N"]
-        
+
         # drop UNK tokens for function sequence training by filtering
         func = [rn_to_function(r) for r in rn_half]
         func = [f for f in func if f in cfg.func_vocab]
@@ -490,7 +492,7 @@ if __name__ == "__main__":
     # Example usage: train on dataset and sample a harmony plan
     pieces = [{"id": "bach/bwv8.6", "key": "B major", "melody_tokens": ["BAR", "R:1.0", "N:0:0.5", "N:0:0.5", "N:5:1.0", "N:0:1.0", "BAR", "N:2:1.0", "N:0:1.0", "N:10:2.0", "N:0:0.5", "N:10:0.5", "BAR", "N:9:1.0", "N:7:1.0", "R:1.0", "N:0:0.5", "N:10:0.5", "BAR", "N:9:1.0", "N:2:0.5", "N:0:0.5", "N:11:0.5", "N:7:0.5", "N:0:1.0", "BAR", "N:0:1.0", "N:11:1.0", "N:0:2.0", "BAR", "N:0:1.0", "N:11:1.0", "N:0:2.0", "BAR", "R:1.0", "N:7:0.5", "N:9:0.5", "N:10:1.0", "N:9:1.0", "BAR", "N:2:2.0", "N:4:0.5", "N:1:2.0", "BAR", "R:1.0", "N:2:0.5", "N:0:0.5", "N:11:1.0", "N:0:1.0", "BAR", "N:0:1.0", "N:11:1.0", "N:0:1.0", "N:7:0.5", "N:7:0.5", "BAR", "N:0:2.0", "N:10:0.5", "N:9:1.0", "N:2:1.0", "BAR", "N:1:1.0", "N:2:2.0", "N:1:1.0", "BAR", "N:2:2.0", "R:1.0", "N:5:0.5", "N:0:0.5", "BAR", "N:2:1.0", "N:9:0.5", "N:10:0.5", "N:0:2.0", "N:10:0.5", "BAR", "N:9:1.0", "N:7:0.5", "N:5:0.5", "N:4:1.0", "N:5:1.0", "BAR", "N:5:1.0", "N:4:1.0", "N:5:2.0"], "harmony_tokens": ["iv", "iv", "i", "iv", "IV", "bVII", "IV", "v75b3", "I6b5", "IV", "I742", "iii", "iiiob5", "IV", "IV7", "iii7", "I", "i54", "V", "I", "I", "ii652", "V", "I", "I532", "iii", "vi6", "vb3", "vi43", "iiiø7b53", "iiio6", "VI", "VI6#42", "iv", "IV7", "V42", "I752", "i4", "V", "I", "v4", "I6", "Ib753", "vi43", "ii42", "VI", "#vø7", "ii54", "VI", "ii", "#i7b2", "ii", "IV6b5", "ii42", "bVII6", "IV6", "I6b5", "IV", "bvii", "I42", "viiob753", "iv4", "I", "IV"]},
                 {"id": "bach/bwv67.7", "key": "A major", "melody_tokens": ["BAR", "N:4:1.0", "N:0:1.0", "N:2:1.0", "N:4:1.0", "BAR", "N:7:1.0", "N:5:1.0", "N:5:1.0", "N:4:1.0", "BAR", "N:7:1.0", "N:5:1.0", "N:4:1.0", "N:2:1.0", "BAR", "N:2:1.0", "N:4:2.0", "BAR", "N:2:1.0", "N:2:1.0", "N:2:1.0", "N:4:1.0", "BAR", "N:2:1.0", "N:0:1.0", "N:2:1.0", "N:11:1.0", "BAR", "N:11:1.0", "N:0:1.0", "N:2:1.0", "N:4:1.0", "BAR", "N:2:0.5", "N:4:0.5", "N:5:1.0", "N:4:1.0", "N:2:1.0", "BAR", "N:0:2.0", "R:1.0"], "harmony_tokens": ["I", "I", "IV42", "viio6", "I", "V6", "IV6", "V65", "I", "I6", "IV752", "I", "ii65", "V", "I", "I", "I", "V742", "V6", "V", "I", "V7", "vi", "viio6", "III", "III", "vi", "V", "I", "iii64", "IV6", "I64", "ii65", "V7", "I", "I"]}]
-    cfg = HarmonyConfig(num_bars=8, k_func=3, alpha_func=0.25, seed=1) #42)
+    cfg = HarmonyConfig(num_bars=8, k_func=3, alpha_func=0.25, seed=42)
     model = train_harmony_model(pieces, cfg)
 
     func_plan, rn_plan = sample_harmony_plan(model)

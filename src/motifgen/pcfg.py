@@ -251,7 +251,7 @@ class PCFG:
         rng: Optional[random.Random] = None,
         motif_dur_units: Sequence[int] = (4,),  # 2 beats on half-beat grid
         motif_dur_probs: Optional[Sequence[float]] = None,
-    ) -> List[Event]:
+    ) -> Sequence[Event]:
         """
         One-shot plan sampler:
           - samples terminals from the grammar
@@ -306,10 +306,11 @@ def make_minimal_mvp_grammar() -> PCFG:
         GrammarRule("F", ("SPIN",), 1.0),
 
         GrammarRule("SPIN", ("SPIN", "SPIN"), 0.25),
-        GrammarRule("SPIN", ("SEQ+1",), 0.20),
-        GrammarRule("SPIN", ("SEQ+2",), 0.20),
+        GrammarRule("SPIN", ("SEQ+1",), 0.15),
+        GrammarRule("SPIN", ("SEQ+2",), 0.15),
         GrammarRule("SPIN", ("INV",), 0.15),
-        GrammarRule("SPIN", ("M0",), 0.20),
+        GrammarRule("SPIN", ("RET",), 0.15),
+        GrammarRule("SPIN", ("M0",), 0.15),
 
         GrammarRule("E", ("CAD",), 1.0),
     ]
