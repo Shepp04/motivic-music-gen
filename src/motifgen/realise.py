@@ -23,6 +23,14 @@ class Event:
     start_units: int     # inclusive
     dur_units: int       # positive
 
+
+@dataclass
+class RealisedPiece:
+    melody_tokens: List[str]
+    motif_tokens_by_event: Dict[Tuple[int, int], List[str]]
+    melody_part: m21.stream.Part  # convenience render
+
+
 # ----------------------------
 # Motif representation
 # ----------------------------
@@ -41,6 +49,12 @@ Motif = List[MotifEvent]
 # ----------------------------
 # Utilities: stream <-> motif
 # ----------------------------
+
+
+def _token_pc_relative_to_tonic(p: m21.pitch.Pitch, key_obj: m21.key.Key) -> int:
+    tonic_pc = key_obj.tonic.pitchClass
+    return (p.pitchClass - tonic_pc) % 12
+
 
 def motif_from_stream(
     stream: m21.stream.Stream,
@@ -114,6 +128,138 @@ def motif_to_stream(
 
         s.append(n)
     return s
+
+
+def motif_block_to_tokens(
+    motif_block: Motif,
+    *,
+    key_obj: m21.key.Key,
+    units_per_beat: int,
+) -> List[Token]:
+    """
+    Convert a realised motif block (MotifEvent list) into dataset-style tokens:
+      - N:<pc>:<dur> where pc is tonic-relative pitch class 0..11
+      - R:<dur>
+    dur is in quarterLength units (float).
+    """
+    out: List[Token] = []
+    for ev in motif_block:
+        ql = ev.dur_units / float(units_per_beat)
+        # Normalise to typical decimal forms (optional)
+        ql = float(ql)
+
+        if ev.is_rest:
+            out.append(f"R:{ql}")
+        else:
+            p = pitch_from_deg_oct(ev.deg, ev.oct, key_obj)
+            pc = _token_pc_relative_to_tonic(p, key_obj)
+            out.append(f"N:{pc}:{ql}")
+    return out
+
+
+def tokens_to_part(
+    tokens: Sequence[Token],
+    *,
+    key_obj: m21.key.Key,
+    default_octave: int = 4,
+    color_spans: Optional[List[Tuple[int, int, str]]] = None,
+) -> m21.stream.Part:
+    """
+    Convert flat tokens (no BAR tokens) into a monophonic music21 Part.
+    Tokens must be of the form:
+      - N:<pc>:<dur>
+      - R:<dur>
+
+    Notes are rendered in a fixed register around default_octave.
+    If you want smarter register handling later, add an octave-tracking policy here.
+
+    color_spans: optional list of (start_token_idx, end_token_idx_exclusive, color)
+                 to color motif instances.
+    """
+    part = m21.stream.Part()
+    part.insert(0.0, key_obj)
+
+    # Build a quick color lookup by token index
+    color_for_idx: Dict[int, str] = {}
+    if color_spans:
+        for a, b, c in color_spans:
+            for i in range(a, b):
+                color_for_idx[i] = c
+
+    tonic_pc = key_obj.tonic.pitchClass
+
+    for i, tok in enumerate(tokens):
+        if tok.startswith("R:"):
+            ql = float(tok.split(":")[1])
+            r = m21.note.Rest(quarterLength=ql)
+            part.append(r)
+            continue
+
+        if tok.startswith("N:"):
+            _, pc_s, dur_s = tok.split(":")
+            pc = int(pc_s)
+            ql = float(dur_s)
+
+            # Map pc back to an absolute pitch near tonic in default_octave.
+            # Choose a pitch with pitchClass = (tonic_pc + pc) % 12
+            target_pc = (tonic_pc + pc) % 12
+            p = m21.pitch.Pitch()
+            p.pitchClass = target_pc
+            p.octave = default_octave
+
+            n = m21.note.Note(p, quarterLength=ql)
+
+            # Apply color if requested
+            if i in color_for_idx:
+                try:
+                    n.style.color = color_for_idx[i]
+                except Exception:
+                    pass
+
+            part.append(n)
+            continue
+
+        # Unknown token: ignore
+    return part
+
+
+def motif_events_to_token_map(
+    *,
+    key_obj: m21.key.Key,
+    units_per_beat: int,
+    base_motif: Motif,
+    events: Sequence[Event],
+) -> Dict[Tuple[int, int], List[Token]]:
+    """
+    Build motif_tokens_by_event mapping required by the infiller:
+      key: (start_units, dur_units)
+      value: list of tokens whose durations sum to dur_units
+
+    This uses your existing transformation + fitting functions:
+      apply_motif_token(), fit_motif_to_duration(), make_cadence_template()
+    """
+    out: Dict[Tuple[int, int], List[Token]] = {}
+
+    for ev in events:
+        if ev.dur_units <= 0:
+            continue
+
+        if ev.tok == "CAD":
+            motif_block = make_cadence_template(
+                key_obj=key_obj,
+                units_per_beat=units_per_beat,
+                dur_units=ev.dur_units,
+                octave=4,
+            )
+        else:
+            motif_block = apply_motif_token(base_motif, ev.tok)
+            motif_block = fit_motif_to_duration(motif_block, ev.dur_units)
+
+        out[(ev.start_units, ev.dur_units)] = motif_block_to_tokens(
+            motif_block, key_obj=key_obj, units_per_beat=units_per_beat
+        )
+
+    return out
 
 
 # ----------------------------

@@ -1,5 +1,5 @@
 
-# src/motifgen/ngram.py
+# src/motifgen/harmony_ngram.py
 # k-gram counts + smoothing + sampling
 from __future__ import annotations
 
