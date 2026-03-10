@@ -17,28 +17,33 @@ def load_jsonl(path: str):
 
 def make_demo_motif() -> m21.stream.Stream:
     motif_stream = m21.stream.Stream()
-    motif_stream.append(m21.note.Note("C4", quarterLength=0.25))
-    motif_stream.append(m21.note.Note("F4", quarterLength=0.25))
     motif_stream.append(m21.note.Note("E4", quarterLength=0.5))
-    motif_stream.append(m21.note.Note("D4", quarterLength=1.0))
+    motif_stream.append(m21.note.Note("D4", quarterLength=0.25))
+    motif_stream.append(m21.note.Note("C4", quarterLength=0.25))
+    motif_stream.append(m21.note.Note("D4", quarterLength=0.25))
+    motif_stream.append(m21.note.Note("C4", quarterLength=0.25))
+    motif_stream.append(m21.note.Note("G3", quarterLength=0.5))
+    #motif_stream.append(m21.note.Note("D4", quarterLength=1.0))
     return motif_stream
 
 
 if __name__ == "__main__":
     # 0) Config
     seed = random.randint(0, 100) # 42
-    num_bars = 4
-    units_per_beat = 2
+    num_bars = 8
+    units_per_beat = 4
     beats_per_bar = 4
     total_units = num_bars * beats_per_bar * units_per_beat
+    density = 0.9
 
+    print("Seed:", seed)
     # 1) Load dataset
     train_items = load_jsonl("data/train.jsonl")
 
     # 2) Sample phrase plan (PCFG events)
-    grammar = pcfg.make_minimal_mvp_grammar()
-    pcfg_cfg = pcfg.SamplerConfig(seed=seed)
-    events = grammar.sample_plan(num_bars=num_bars, cfg=pcfg_cfg)
+    grammar = pcfg.make_minimal_mvp_grammar(density=density)
+    pcfg_cfg = pcfg.SamplerConfig(seed=seed, units_per_beat=units_per_beat, density=density, min_gap_units=0)
+    events = grammar.sample_plan(num_bars=num_bars, cfg=pcfg_cfg, motif_dur_units=(8,))
 
     print("PCFG events:")
     for e in events:
@@ -46,11 +51,11 @@ if __name__ == "__main__":
 
     # 3) Train melody n-gram (token-level)
     melody_seqs = [item["melody_tokens"] for item in train_items]
-    mel_cfg = melody_ngram.NGramConfig(k=16, alpha=0.25, seed=seed)
+    mel_cfg = melody_ngram.NGramConfig(k=4, alpha=0.25, seed=seed)
     melody_model = melody_ngram.train_ngram(melody_seqs, mel_cfg)
 
     # 4) Train harmony model (function plan + RN plan at half-bar resolution)
-    harm_cfg = harmony_ngram.HarmonyConfig(num_bars=num_bars, k_func=3, alpha_func=0.25, seed=seed)
+    harm_cfg = harmony_ngram.HarmonyConfig(num_bars=num_bars, k_func=6, alpha_func=0.25, seed=seed)
     harm_model = harmony_ngram.train_harmony_model(train_items, harm_cfg)
     func_plan, rn_plan = harmony_ngram.sample_harmony_plan(harm_model)
 
@@ -91,6 +96,7 @@ if __name__ == "__main__":
         "CAD": "#ff7f0e",
     }
 
+    chord_pcs = melody_ngram.chord_pc_sets_from_rn_plan(rn_plan, key_obj=key_obj)
     melody_tokens_full, color_spans = melody_ngram.infill_timeline_with_spans(
         events=events,
         total_units=total_units,
@@ -98,6 +104,9 @@ if __name__ == "__main__":
         model=melody_model,
         cfg=infill_cfg,
         color_map=color_map,
+        chord_pcs_by_halfbar=chord_pcs,
+        beats_per_bar=beats_per_bar,
+        strong_beats=(0,2),
     )
 
     # 8) Realise melody tokens into a music21 part

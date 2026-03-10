@@ -126,7 +126,7 @@ def get_anacrusis_shift(score_or_part) -> float:
 def tokenise_melody(
     part: m21.stream.Part,
     key_obj: m21.key.Key,
-    dur_set=(2.0, 1.0, 0.5),
+    dur_set=(2.0, 1.0, 0.5, 0.25),
 ) -> list[str]:
     """
     Tokenise into:

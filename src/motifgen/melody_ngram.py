@@ -7,6 +7,7 @@ import math
 import random
 import re
 
+import music21 as m21
 from motifgen.pcfg import Event
 
 
@@ -52,12 +53,78 @@ def pc_of(tok: str) -> Optional[int]:
     return int(m.group(1)) if m else None
 
 
+def pc_circular_dist(a: int, b: int) -> int:
+    """Circular pitch-class distance on mod-12."""
+    d = abs(a - b) % 12
+    return min(d, 12 - d)
+
+def last_note_pc(tokens: Sequence[str]) -> Optional[int]:
+    """Find the most recent NOTE token pc in a token list."""
+    for t in reversed(tokens):
+        if is_note(t):
+            return pc_of(t)
+    return None
+
+
 def make_note(pc: int, ql: float) -> str:
     return f"N:{pc}:{ql}"
 
 
 def make_rest(ql: float) -> str:
     return f"R:{ql}"
+
+
+def chord_pc_sets_from_rn_plan(
+    rn_plan: Sequence[str],
+    *,
+    key_obj: m21.key.Key,
+) -> List[set[int]]:
+    """
+    Convert a half-bar RN plan (len = 2*num_bars) into tonic-relative chord-tone sets.
+    Each entry is a set of pitch classes in [0..11] relative to tonic.
+    """
+    tonic_pc = key_obj.tonic.pitchClass
+    out: List[set[int]] = []
+
+    for rn in rn_plan:
+        rn = (rn or "N").strip()
+        if rn == "N":
+            out.append(set())
+            continue
+
+        # Normalise diminished symbol conventions
+        rn_norm = rn.replace("°", "o").replace("ø", "o")
+
+        try:
+            rn_obj = m21.roman.RomanNumeral(rn_norm, key_obj)
+            pcs_abs = set(rn_obj.pitchClasses)  # absolute pitch classes 0..11
+            pcs_rel = {(pc - tonic_pc) % 12 for pc in pcs_abs}
+            out.append(pcs_rel)
+        except Exception:
+            out.append(set())
+
+    return out
+
+
+def is_strong_beat(
+    cur_unit: int,
+    *,
+    units_per_beat: int,
+    beats_per_bar: int,
+    strong_beats: Tuple[int, ...] = (0, 2),  # beats 1 and 3 (0-indexed)
+) -> bool:
+    beat_idx = (cur_unit // units_per_beat) % beats_per_bar
+    return beat_idx in strong_beats
+
+
+def halfbar_index_for_unit(
+    cur_unit: int,
+    *,
+    units_per_beat: int,
+) -> int:
+    # half-bar = 2 beats = 2 * units_per_beat units
+    halfbar_units = 2 * units_per_beat
+    return cur_unit // halfbar_units
 
 
 # ----------------------------
@@ -150,10 +217,12 @@ def train_ngram(seqs: Iterable[Sequence[Token]], cfg: NGramConfig) -> NGramModel
 class InfillConfig:
     units_per_beat: int = 2
     # allowed quarterLength durations for generated tokens
-    dur_set: Tuple[float, ...] = (2.0, 1.0, 0.5)
+    dur_set: Tuple[float, ...] = (2.0, 1.0, 0.5, 0.25)
     # prevent gaps being filled with too many rests
     max_consecutive_rests: int = 2
     seed: Optional[int] = None
+    voice_leading_lambda: float = 1.0
+    strong_beat_pick_closest: bool = False
 
 
 def _allowed_tokens_for_remaining(
@@ -195,6 +264,44 @@ def _sample_from_subset(model: NGramModel, ctx: Context, subset: Sequence[Token]
     return subset[-1]
 
 
+def _sample_with_voice_leading(
+    model: NGramModel,
+    ctx: Context,
+    subset: Sequence[Token],
+    rng: random.Random,
+    prev_pc: Optional[int],
+    lam: float,
+) -> Token:
+    """
+    Sample from subset using n-gram probability multiplied by a voice-leading bonus:
+      weight = P_ngram(tok|ctx) * exp(-lam * dist(prev_pc, tok_pc))
+    Rests are not penalised.
+    """
+    import math
+
+    weights: List[float] = []
+    for t in subset:
+        w = model.prob(t, ctx)
+        if prev_pc is not None and is_note(t) and lam > 1e-9:
+            pc = pc_of(t)
+            if pc is not None:
+                d = pc_circular_dist(prev_pc, pc)
+                w *= math.exp(-lam * d)
+        weights.append(w)
+
+    s = sum(weights)
+    if s <= 0:
+        return rng.choice(list(subset))
+
+    x = rng.random() * s
+    acc = 0.0
+    for t, w in zip(subset, weights):
+        acc += w
+        if x <= acc:
+            return t
+    return subset[-1]
+
+
 # ----------------------------
 # Timeline infilling
 # ----------------------------
@@ -224,35 +331,102 @@ def fill_gap_tokens(
     model: NGramModel,
     context: List[Token],
     gap_units: int,
+    gap_start_unit: int,
     cfg: InfillConfig,
     rng: random.Random,
+    # --- harmony-aware args (optional) ---
+    chord_pcs_by_halfbar: Optional[Sequence[set[int]]] = None,
+    beats_per_bar: int = 4,
+    strong_beats: Tuple[int, ...] = (0, 2),
 ) -> List[Token]:
     """
     Generate tokens to fill exactly gap_units.
-    Returns a list of N:/R: tokens.
+    If chord_pcs_by_halfbar is provided, constrain NOTE tokens on strong beats
+    to chord tones of the active half-bar chord.
     """
     out: List[Token] = []
     remaining = gap_units
     rest_run = 0
+    cur_unit = gap_start_unit
 
     while remaining > 0:
         ctx = tuple(context[-(model.k - 1):]) if model.k > 1 else ()
         subset = _allowed_tokens_for_remaining(model.vocab, remaining_units=remaining, cfg=cfg)
         if not subset:
-            # fallback: fill with the smallest rest
+            # fallback: fill with smallest rest
             smallest = min(cfg.dur_set)
             du = max(1, int(round(smallest * cfg.units_per_beat)))
-            out.append(make_rest(smallest))
+            tok = make_rest(smallest)
+            out.append(tok)
             remaining -= du
-            context.append(out[-1])
+            context.append(tok)
             rest_run += 1
+            cur_unit += du
             continue
 
         # avoid too many consecutive rests
         if rest_run >= cfg.max_consecutive_rests:
             subset = [t for t in subset if not is_rest(t)] or subset
 
-        tok = _sample_from_subset(model, ctx, subset, rng)
+        # --- Harmony-aware filtering on strong beats ---
+        if chord_pcs_by_halfbar is not None and is_strong_beat(
+            cur_unit,
+            units_per_beat=cfg.units_per_beat,
+            beats_per_bar=beats_per_bar,
+            strong_beats=strong_beats,
+        ):
+            hi = halfbar_index_for_unit(cur_unit, units_per_beat=cfg.units_per_beat)
+            chord_pcs = chord_pcs_by_halfbar[hi] if 0 <= hi < len(chord_pcs_by_halfbar) else set()
+
+            # If we have chord info, restrict NOTE tokens to chord tones.
+            if chord_pcs:
+                subset_notes = []
+                subset_other = []
+                for t in subset:
+                    if is_note(t):
+                        pc = pc_of(t)
+                        if pc is not None and pc in chord_pcs:
+                            subset_notes.append(t)
+                    else:
+                        subset_other.append(t)
+
+                # Prefer chord-tone notes; if none, fall back to original subset
+                if subset_notes:
+                    subset = subset_notes + subset_other
+
+        prev_pc = last_note_pc(context)
+
+        # Prefer nearest chord tone on strong beats
+        if (
+            chord_pcs_by_halfbar is not None
+            and prev_pc is not None
+            and cfg.strong_beat_pick_closest
+            and is_strong_beat(cur_unit, units_per_beat=cfg.units_per_beat, beats_per_bar=beats_per_bar, strong_beats=strong_beats)
+        ):
+            hi = halfbar_index_for_unit(cur_unit, units_per_beat=cfg.units_per_beat)
+            chord_pcs = chord_pcs_by_halfbar[hi] if 0 <= hi < len(chord_pcs_by_halfbar) else set()
+            if chord_pcs:
+                # restrict to chord-tone notes that fit remaining
+                chord_note_subset = [t for t in subset if is_note(t) and (pc_of(t) in chord_pcs)]
+                if chord_note_subset:
+                    # choose the closest pc deterministically, tie-break by n-gram prob
+                    best = chord_note_subset[0]
+                    best_d = pc_circular_dist(prev_pc, pc_of(best))
+                    best_p = model.prob(best, ctx)
+                    for t in chord_note_subset[1:]:
+                        d = pc_circular_dist(prev_pc, pc_of(t))
+                        p = model.prob(t, ctx)
+                        if d < best_d or (d == best_d and p > best_p):
+                            best, best_d, best_p = t, d, p
+                    tok = best
+                else:
+                    tok = _sample_with_voice_leading(model, ctx, subset, rng, prev_pc, cfg.voice_leading_lambda)
+            else:
+                tok = _sample_with_voice_leading(model, ctx, subset, rng, prev_pc, cfg.voice_leading_lambda)
+        else:
+            # soft voice-leading weighting everywhere (default)
+            tok = _sample_with_voice_leading(model, ctx, subset, rng, prev_pc, cfg.voice_leading_lambda)
+
         du = token_dur_units(tok, cfg.units_per_beat)
         if du <= 0 or du > remaining:
             continue
@@ -261,6 +435,7 @@ def fill_gap_tokens(
         remaining -= du
         context.append(tok)
         rest_run = rest_run + 1 if is_rest(tok) else 0
+        cur_unit += du
 
     return out
 
@@ -273,6 +448,9 @@ def infill_timeline_with_spans(
     model: NGramModel,
     cfg: InfillConfig,
     color_map: Dict[str, str],
+    chord_pcs_by_halfbar: Optional[Sequence[set[int]]] = None,
+    beats_per_bar: int = 4,
+    strong_beats: Tuple[int, ...] = (0, 2),
 ) -> Tuple[List[Token], List[Tuple[int, int, str]]]:
     """
     Like infill_timeline(...), but also returns color spans for motif blocks
@@ -293,7 +471,17 @@ def infill_timeline_with_spans(
         # gap
         if s > cur:
             gap = s - cur
-            out.extend(fill_gap_tokens(model=model, context=context, gap_units=gap, cfg=cfg, rng=rng))
+            out.extend(fill_gap_tokens(
+                model=model,
+                context=context,
+                gap_units=gap,
+                gap_start_unit=cur,
+                cfg=cfg,
+                rng=rng,
+                chord_pcs_by_halfbar=chord_pcs_by_halfbar,
+                beats_per_bar=beats_per_bar,
+                strong_beats=strong_beats,
+            ))
             cur = s
 
         # motif block
@@ -326,7 +514,17 @@ def infill_timeline_with_spans(
     # tail
     if cur < total_units:
         gap = total_units - cur
-        out.extend(fill_gap_tokens(model=model, context=context, gap_units=gap, cfg=cfg, rng=rng))
+        out.extend(fill_gap_tokens(
+            model=model,
+            context=context,
+            gap_units=gap,
+            gap_start_unit=cur,
+            cfg=cfg,
+            rng=rng,
+            chord_pcs_by_halfbar=chord_pcs_by_halfbar,
+            beats_per_bar=beats_per_bar,
+            strong_beats=strong_beats,
+        ))
 
     # (optional) duration sanity is in infill_timeline; keep it simple here
     return out, spans

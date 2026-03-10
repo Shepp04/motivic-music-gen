@@ -14,7 +14,7 @@ import re
 # ----------------------------
 
 Function = str  # "T" | "PD" | "D" | "UNK"
-_ALLOWED_FIGS = {"", "63", "7", "43", "42"}
+_ALLOWED_FIGS = {""} # {"", "63", "7", "43", "42"}
 
 
 def rn_to_function(rn: str) -> Function:
@@ -55,8 +55,6 @@ def rn_to_function(rn: str) -> Function:
 
     # Dominant function: V* or vii°*
     if root_l == "v":
-        return "PD"
-    if root == "V":
         return "D"
     if root_l.startswith("vii"):
         return "D"
@@ -371,7 +369,7 @@ def fit_rn_distributions(
             if f not in counts:
                 continue
             d = counts[f]
-            d[rn] = d.get(rn, 0) + 1
+            d[rn_s] = d.get(rn_s, 0) + 1
 
     # Normalize with tiny smoothing to avoid zeros
     rn_by_func: Dict[Function, Dict[str, float]] = {}
