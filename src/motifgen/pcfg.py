@@ -363,11 +363,11 @@ def make_minimal_mvp_grammar(density: float = 0.5) -> PCFG:
         GrammarRule("F", ("SPIN",), 1.0),
 
         GrammarRule("SPIN", ("SPIN", "SPIN"), p_rec),
-        GrammarRule("SPIN", ("SEQ+1",), scaled["SEQ+1"]),
-        GrammarRule("SPIN", ("SEQ+2",), scaled["SEQ+2"]),
+        GrammarRule("SPIN", ("SEQ+1", "SEQ+2"), scaled["SEQ+1"]),
+        GrammarRule("SPIN", ("SEQ+2", "SEQ+1"), scaled["SEQ+2"]),
         GrammarRule("SPIN", ("INV",), scaled["INV"]),
         GrammarRule("SPIN", ("RET",), scaled["RET"]),
-        GrammarRule("SPIN", ("M0",), scaled["M0"]),
+        GrammarRule("SPIN", ("INV",), scaled["M0"]),
 
         GrammarRule("E", ("CAD",), 1.0),
     ]

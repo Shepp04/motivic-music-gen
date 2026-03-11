@@ -1,45 +1,34 @@
-# motif transforms + realise tokens into notes
 # src/motifgen/realise.py
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
+import re
 
 import music21 as m21
 
-Symbol = str  # nonterminal or terminal
+Token = str
+Symbol = str
+
+_RN_ROOT_RE = re.compile(r"^([ivIV]+o?)")
+
+
+# ----------------------------
+# Data models
+# ----------------------------
 
 @dataclass(frozen=True)
 class Event:
-    """
-    A scheduled structure token to be realised into notes later.
+    tok: Symbol
+    start_units: int
+    dur_units: int
 
-    start_units/dur_units are in 'grid units' where:
-      - beats_per_bar = 4
-      - units_per_beat = 2 -> unit = 1/2 beat (eighth-note grid)
-        e.g. 1 beat = 2 units, 1 bar = 8 units.
-    """
-    tok: Symbol          # e.g. "M0", "REP", "SEQ+2", "INV", "CAD"
-    start_units: int     # inclusive
-    dur_units: int       # positive
-
-
-@dataclass
-class RealisedPiece:
-    melody_tokens: List[str]
-    motif_tokens_by_event: Dict[Tuple[int, int], List[str]]
-    melody_part: m21.stream.Part  # convenience render
-
-
-# ----------------------------
-# Motif representation
-# ----------------------------
 
 @dataclass(frozen=True)
 class MotifEvent:
-    deg: int            # 0..6 (tonic-relative diatonic degree)
-    oct: int            # octave number (e.g. 4)
-    dur_units: int      # duration in grid units (units_per_beat = 2 => half-beat)
+    deg: int          # 0..6 diatonic scale degree
+    oct: int          # octave number
+    dur_units: int
     is_rest: bool = False
 
 
@@ -47,35 +36,16 @@ Motif = List[MotifEvent]
 
 
 # ----------------------------
-# Utilities: stream <-> motif
+# Motif stream <-> diatonic motif
 # ----------------------------
 
-
-def _token_pc_relative_to_tonic(p: m21.pitch.Pitch, key_obj: m21.key.Key) -> int:
-    tonic_pc = key_obj.tonic.pitchClass
-    return (p.pitchClass - tonic_pc) % 12
-
-
-def motif_from_stream(
-    stream: m21.stream.Stream,
-    *,
-    key_obj: m21.key.Key,
-    units_per_beat: int,
-) -> Motif:
-    """
-    Convert a music21 motif stream into a key-relative diatonic Motif.
-
-    - scale degree is 0..6 relative to key tonic
-    - durations quantised onto the units grid
-    """
-    evs: Motif = []
+def motif_from_stream(stream: m21.stream.Stream, *, key_obj: m21.key.Key, units_per_beat: int) -> Motif:
+    out: Motif = []
     for el in stream.notesAndRests:
-        ql = float(el.duration.quarterLength)
-        # 1 quarterLength = 1 beat (in music21)
-        dur_units = max(1, int(round(ql * units_per_beat)))
+        du = max(1, int(round(float(el.duration.quarterLength) * units_per_beat)))
 
         if isinstance(el, m21.note.Rest):
-            evs.append(MotifEvent(deg=0, oct=4, dur_units=dur_units, is_rest=True))
+            out.append(MotifEvent(0, 4, du, True))
             continue
 
         if isinstance(el, m21.note.Note):
@@ -83,187 +53,40 @@ def motif_from_stream(
         elif isinstance(el, m21.chord.Chord):
             pitch = el.sortAscending().pitches[-1]
         else:
-            evs.append(MotifEvent(deg=0, oct=4, dur_units=dur_units, is_rest=True))
+            out.append(MotifEvent(0, 4, du, True))
             continue
 
-        deg_1based = key_obj.getScaleDegreeFromPitch(pitch)
-        if deg_1based is None:
-            # If chromatic, snap to nearest scale degree
-            deg_1based = key_obj.getScale().getScaleDegreeFromPitch(pitch) or 1
+        deg_1 = key_obj.getScaleDegreeFromPitch(pitch)
+        if deg_1 is None:
+            deg_1 = key_obj.getScale().getScaleDegreeFromPitch(pitch) or 1
 
-        deg = int(deg_1based) - 1
-        evs.append(MotifEvent(deg=deg % 7, oct=int(pitch.octave), dur_units=dur_units, is_rest=False))
+        out.append(MotifEvent((int(deg_1) - 1) % 7, int(pitch.octave), du, False))
 
-    return evs
+    return out
 
 
 def pitch_from_deg_oct(deg: int, octv: int, key_obj: m21.key.Key) -> m21.pitch.Pitch:
-    p = key_obj.pitchFromDegree((deg % 7) + 1)  # 1..7
+    p = key_obj.pitchFromDegree((deg % 7) + 1)
     p.octave = octv
     return p
 
 
-def motif_to_stream(
-    motif: Motif,
-    *,
-    key_obj: m21.key.Key,
-    units_per_beat: int,
-    color: Optional[str] = None,
-) -> m21.stream.Stream:
+def motif_to_stream(motif: Motif, *, key_obj: m21.key.Key, units_per_beat: int, color: Optional[str] = None) -> m21.stream.Stream:
     s = m21.stream.Stream()
     for ev in motif:
         ql = ev.dur_units / float(units_per_beat)
-        if ev.is_rest:
-            n = m21.note.Rest(quarterLength=ql)
-        else:
-            p = pitch_from_deg_oct(ev.deg, ev.oct, key_obj)
-            n = m21.note.Note(p, quarterLength=ql)
-
-        if color is not None:
-            # music21 supports style.color for many renderers
+        el = m21.note.Rest(quarterLength=ql) if ev.is_rest else m21.note.Note(pitch_from_deg_oct(ev.deg, ev.oct, key_obj), quarterLength=ql)
+        if color:
             try:
-                n.style.color = color
+                el.style.color = color
             except Exception:
                 pass
-
-        s.append(n)
+        s.append(el)
     return s
 
 
-def motif_block_to_tokens(
-    motif_block: Motif,
-    *,
-    key_obj: m21.key.Key,
-    units_per_beat: int,
-) -> List[Token]:
-    """
-    Convert a realised motif block (MotifEvent list) into dataset-style tokens:
-      - N:<pc>:<dur> where pc is tonic-relative pitch class 0..11
-      - R:<dur>
-    dur is in quarterLength units (float).
-    """
-    out: List[Token] = []
-    for ev in motif_block:
-        ql = ev.dur_units / float(units_per_beat)
-        # Normalise to typical decimal forms (optional)
-        ql = float(ql)
-
-        if ev.is_rest:
-            out.append(f"R:{ql}")
-        else:
-            p = pitch_from_deg_oct(ev.deg, ev.oct, key_obj)
-            pc = _token_pc_relative_to_tonic(p, key_obj)
-            out.append(f"N:{pc}:{ql}")
-    return out
-
-
-def tokens_to_part(
-    tokens: Sequence[Token],
-    *,
-    key_obj: m21.key.Key,
-    default_octave: int = 4,
-    color_spans: Optional[List[Tuple[int, int, str]]] = None,
-) -> m21.stream.Part:
-    """
-    Convert flat tokens (no BAR tokens) into a monophonic music21 Part.
-    Tokens must be of the form:
-      - N:<pc>:<dur>
-      - R:<dur>
-
-    Notes are rendered in a fixed register around default_octave.
-    If you want smarter register handling later, add an octave-tracking policy here.
-
-    color_spans: optional list of (start_token_idx, end_token_idx_exclusive, color)
-                 to color motif instances.
-    """
-    part = m21.stream.Part()
-    part.insert(0.0, key_obj)
-
-    # Build a quick color lookup by token index
-    color_for_idx: Dict[int, str] = {}
-    if color_spans:
-        for a, b, c in color_spans:
-            for i in range(a, b):
-                color_for_idx[i] = c
-
-    tonic_pc = key_obj.tonic.pitchClass
-
-    for i, tok in enumerate(tokens):
-        if tok.startswith("R:"):
-            ql = float(tok.split(":")[1])
-            r = m21.note.Rest(quarterLength=ql)
-            part.append(r)
-            continue
-
-        if tok.startswith("N:"):
-            _, pc_s, dur_s = tok.split(":")
-            pc = int(pc_s)
-            ql = float(dur_s)
-
-            # Map pc back to an absolute pitch near tonic in default_octave.
-            # Choose a pitch with pitchClass = (tonic_pc + pc) % 12
-            target_pc = (tonic_pc + pc) % 12
-            p = m21.pitch.Pitch()
-            p.pitchClass = target_pc
-            p.octave = default_octave
-
-            n = m21.note.Note(p, quarterLength=ql)
-
-            # Apply color if requested
-            if i in color_for_idx:
-                try:
-                    n.style.color = color_for_idx[i]
-                except Exception:
-                    pass
-
-            part.append(n)
-            continue
-
-        # Unknown token: ignore
-    return part
-
-
-def motif_events_to_token_map(
-    *,
-    key_obj: m21.key.Key,
-    units_per_beat: int,
-    base_motif: Motif,
-    events: Sequence[Event],
-) -> Dict[Tuple[int, int], List[Token]]:
-    """
-    Build motif_tokens_by_event mapping required by the infiller:
-      key: (start_units, dur_units)
-      value: list of tokens whose durations sum to dur_units
-
-    This uses your existing transformation + fitting functions:
-      apply_motif_token(), fit_motif_to_duration(), make_cadence_template()
-    """
-    out: Dict[Tuple[int, int], List[Token]] = {}
-
-    for ev in events:
-        if ev.dur_units <= 0:
-            continue
-
-        if ev.tok == "CAD":
-            motif_block = make_cadence_template(
-                key_obj=key_obj,
-                units_per_beat=units_per_beat,
-                dur_units=ev.dur_units,
-                octave=4,
-            )
-        else:
-            motif_block = apply_motif_token(base_motif, ev.tok)
-            motif_block = fit_motif_to_duration(motif_block, ev.dur_units)
-
-        out[(ev.start_units, ev.dur_units)] = motif_block_to_tokens(
-            motif_block, key_obj=key_obj, units_per_beat=units_per_beat
-        )
-
-    return out
-
-
 # ----------------------------
-# Diatonic transformations
+# Motif transforms
 # ----------------------------
 
 def diatonic_shift(motif: Motif, n: int) -> Motif:
@@ -272,22 +95,15 @@ def diatonic_shift(motif: Motif, n: int) -> Motif:
         if ev.is_rest:
             out.append(ev)
             continue
-        new_deg = ev.deg + n
-        oct_shift = new_deg // 7 if new_deg >= 0 else -((-new_deg + 6) // 7)
-        out.append(MotifEvent(deg=new_deg % 7, oct=ev.oct + oct_shift, dur_units=ev.dur_units))
+        nd = ev.deg + n
+        oct_shift = nd // 7 if nd >= 0 else -((-nd + 6) // 7)
+        out.append(MotifEvent(nd % 7, ev.oct + oct_shift, ev.dur_units, False))
     return out
-
-
-def ret(motif: Motif) -> Motif:
-    return list(reversed(motif))
 
 
 def inv(motif: Motif, axis_deg: Optional[int] = None) -> Motif:
     if axis_deg is None:
-        for ev in motif:
-            if not ev.is_rest:
-                axis_deg = ev.deg
-                break
+        axis_deg = next((e.deg for e in motif if not e.is_rest), None)
         if axis_deg is None:
             return list(motif)
 
@@ -296,9 +112,9 @@ def inv(motif: Motif, axis_deg: Optional[int] = None) -> Motif:
         if ev.is_rest:
             out.append(ev)
             continue
-        inv_deg = 2 * axis_deg - ev.deg
-        oct_shift = inv_deg // 7 if inv_deg >= 0 else -((-inv_deg + 6) // 7)
-        out.append(MotifEvent(deg=inv_deg % 7, oct=ev.oct + oct_shift, dur_units=ev.dur_units))
+        d = 2 * axis_deg - ev.deg
+        oct_shift = d // 7 if d >= 0 else -((-d + 6) // 7)
+        out.append(MotifEvent(d % 7, ev.oct + oct_shift, ev.dur_units, False))
     return out
 
 
@@ -306,37 +122,24 @@ def apply_motif_token(base: Motif, tok: str) -> Motif:
     if tok in ("M0", "REP"):
         return list(base)
     if tok == "RET":
-        return ret(base)
+        return list(reversed(base))
     if tok == "INV":
         return inv(base)
     if tok.startswith("SEQ"):
-        # format: "SEQ+2" or "SEQ-1"
-        n = int(tok.replace("SEQ", ""))
-        return diatonic_shift(base, n)
-    # CAD handled separately (cadence template)
+        return diatonic_shift(base, int(tok.replace("SEQ", "")))
     return list(base)
 
-# Time scaling and fitting
 
 def fit_motif_to_duration(motif: Motif, target_units: int) -> Motif:
-    """
-    Stretch/compress motif durations so total dur_units sums to target_units.
-    Keeps relative durations approximately.
-    """
     if target_units <= 0:
         return []
-
     total = sum(ev.dur_units for ev in motif)
     if total <= 0:
-        return [MotifEvent(deg=0, oct=4, dur_units=target_units, is_rest=True)]
+        return [MotifEvent(0, 4, target_units, True)]
 
-    # Scale and round, then fix rounding error
-    scaled = []
-    for ev in motif:
-        new_d = max(1, int(round(ev.dur_units * (target_units / total))))
-        scaled.append(MotifEvent(deg=ev.deg, oct=ev.oct, dur_units=new_d, is_rest=ev.is_rest))
+    scale = target_units / total
+    scaled = [MotifEvent(ev.deg, ev.oct, max(1, int(round(ev.dur_units * scale))), ev.is_rest) for ev in motif]
 
-    # Adjust to exact target_units
     diff = target_units - sum(ev.dur_units for ev in scaled)
     i = 0
     while diff != 0 and scaled:
@@ -349,65 +152,308 @@ def fit_motif_to_duration(motif: Motif, target_units: int) -> Motif:
                 scaled[i % len(scaled)] = MotifEvent(ev.deg, ev.oct, ev.dur_units - 1, ev.is_rest)
                 diff += 1
         i += 1
-
     return scaled
 
-# Harmony
+
+def make_cadence_template(*, key_obj: m21.key.Key, units_per_beat: int, dur_units: int, octave: int = 4) -> Motif:
+    half = max(1, dur_units // 2)
+    return [
+        MotifEvent(1, octave, half, False),
+        MotifEvent(0, octave, max(1, dur_units - half), False),
+    ]
+
+
+# ----------------------------
+# Harmony-aware motif snapping + tokenisation
+# ----------------------------
+
+def _rn_root_is_V(rn: str) -> bool:
+    if not rn or rn == "N":
+        return False
+    s = rn.strip().replace("°", "o").replace("ø", "o").split("/")[0]
+    m = _RN_ROOT_RE.match(s)
+    return bool(m and m.group(1) == "V")
+
+
+def _strong_onset(start_units: int, *, units_per_beat: int, beats_per_bar: int) -> bool:
+    # only count note onsets that land exactly on beat 1 or 3
+    if start_units % units_per_beat != 0:
+        return False
+    beat = (start_units // units_per_beat) % beats_per_bar
+    return beat in (0, 2)
+
+
+def _rn_chord_pcs(rn: str, key_obj: m21.key.Key) -> List[int]:
+    if not rn or rn == "N":
+        return []
+    rn_norm = rn.replace("°", "o").replace("ø", "o")
+    try:
+        rn_obj = m21.roman.RomanNumeral(rn_norm, key_obj)
+        pcs: List[int] = []
+        for p in rn_obj.pitches:
+            pc = int(p.pitchClass)
+            if pc not in pcs:
+                pcs.append(pc)
+        return pcs
+    except Exception:
+        return []
+
+
+def _deg_to_pc_abs(deg: int, key_obj: m21.key.Key) -> int:
+    return int(key_obj.pitchFromDegree((deg % 7) + 1).pitchClass)
+
+
+def _closest_diatonic_degree_to_pc(target_pc_abs: int, chord_pcs_abs: Sequence[int], key_obj: m21.key.Key) -> int:
+    # choose nearest chord pc to the degree pc, then map that pc back to one of 0..6
+    if not chord_pcs_abs:
+        return 0
+    def dist(a: int, b: int) -> int:
+        d = abs(a - b) % 12
+        return min(d, 12 - d)
+
+    best_pc = chord_pcs_abs[0]
+    best_d = dist(target_pc_abs, best_pc)
+    for pc in chord_pcs_abs[1:]:
+        d = dist(target_pc_abs, pc)
+        if d < best_d:
+            best_pc, best_d = pc, d
+
+    for d in range(7):
+        if _deg_to_pc_abs(d, key_obj) == best_pc:
+            return d
+    return 0
+
+
+def harmonise_motif_block_to_rn(
+    motif: Motif,
+    *,
+    key_obj: m21.key.Key,
+    rn_plan: Sequence[str],
+    block_start_units: int,
+    units_per_beat: int,
+    beats_per_bar: int,
+) -> Motif:
+    if not rn_plan:
+        return motif
+
+    out: Motif = []
+    t = block_start_units
+    halfbar_units = 2 * units_per_beat
+
+    for ev in motif:
+        if ev.is_rest:
+            out.append(ev)
+            t += ev.dur_units
+            continue
+
+        new_deg = ev.deg
+        if _strong_onset(t, units_per_beat=units_per_beat, beats_per_bar=beats_per_bar):
+            hi = t // halfbar_units
+            rn = rn_plan[hi] if 0 <= hi < len(rn_plan) else "N"
+            pcs = _rn_chord_pcs(rn, key_obj)
+            if pcs:
+                new_deg = _closest_diatonic_degree_to_pc(_deg_to_pc_abs(ev.deg, key_obj), pcs, key_obj)
+
+        out.append(MotifEvent(new_deg, ev.oct, ev.dur_units, False))
+        t += ev.dur_units
+
+    return out
+
+
+def motif_block_to_tokens_harmony_aware(
+    motif: Motif,
+    *,
+    key_obj: m21.key.Key,
+    units_per_beat: int,
+    rn_plan: Optional[Sequence[str]],
+    block_start_units: int,
+) -> List[Token]:
+    """
+    Convert motif block into tokens (pc-relative to tonic).
+    Extra rule: in minor, during V harmony, pc 10 -> pc 11 (raised leading tone).
+    """
+    tonic_pc = key_obj.tonic.pitchClass
+    is_minor = (key_obj.mode or "").lower() == "minor"
+    halfbar_units = 2 * units_per_beat
+
+    out: List[Token] = []
+    t = block_start_units
+
+    for ev in motif:
+        ql = float(ev.dur_units / float(units_per_beat))
+
+        if ev.is_rest:
+            out.append(f"R:{ql}")
+            t += ev.dur_units
+            continue
+
+        p = pitch_from_deg_oct(ev.deg, ev.oct, key_obj)
+        rel_pc = (p.pitchClass - tonic_pc) % 12
+
+        if rn_plan and is_minor:
+            hi = t // halfbar_units
+            rn = rn_plan[hi] if 0 <= hi < len(rn_plan) else "N"
+            if _rn_root_is_V(rn):
+                if rel_pc == 10:  # b7 -> 7
+                    rel_pc = 11
+                elif rel_pc == 8:  # b6 -> 6
+                    rel_pc = 9
+
+        out.append(f"N:{int(rel_pc)}:{ql}")
+        t += ev.dur_units
+
+    return out
+
+
+def motif_events_to_token_map(
+    *,
+    key_obj: m21.key.Key,
+    units_per_beat: int,
+    base_motif: Motif,
+    events: Sequence[Event],
+    rn_plan: Optional[Sequence[str]] = None,
+    beats_per_bar: int = 4,
+) -> Dict[Tuple[int, int], List[Token]]:
+    out: Dict[Tuple[int, int], List[Token]] = {}
+    for ev in events:
+        if ev.dur_units <= 0:
+            continue
+
+        if ev.tok == "CAD":
+            block = make_cadence_template(key_obj=key_obj, units_per_beat=units_per_beat, dur_units=ev.dur_units, octave=4)
+        else:
+            block = fit_motif_to_duration(apply_motif_token(base_motif, ev.tok), ev.dur_units)
+
+        if rn_plan is not None:
+            block = harmonise_motif_block_to_rn(
+                block,
+                key_obj=key_obj,
+                rn_plan=rn_plan,
+                block_start_units=ev.start_units,
+                units_per_beat=units_per_beat,
+                beats_per_bar=beats_per_bar,
+            )
+
+        out[(ev.start_units, ev.dur_units)] = motif_block_to_tokens_harmony_aware(
+            block,
+            key_obj=key_obj,
+            units_per_beat=units_per_beat,
+            rn_plan=rn_plan,
+            block_start_units=ev.start_units,
+        )
+    return out
+
+
+# ----------------------------
+# Token rendering (melody part)
+# ----------------------------
+
+def _choose_pitch_nearby(target_pc: int, prev: Optional[m21.pitch.Pitch], default_octave: int, max_oct_off: int = 1) -> m21.pitch.Pitch:
+    # candidates at default_octave +/- 1; pick minimal leap + slight drift penalty
+    cands: List[m21.pitch.Pitch] = []
+    for off in range(-max_oct_off, max_oct_off + 1):
+        p = m21.pitch.Pitch()
+        p.pitchClass = target_pc
+        p.octave = default_octave + off
+        cands.append(p)
+
+    if prev is None:
+        return cands[max_oct_off]  # off=0
+
+    best = cands[0]
+    best_cost = 1e18
+    for p in cands:
+        leap = abs(p.midi - prev.midi)
+        drift = abs(p.octave - default_octave)
+        cost = leap + 2.0 * drift
+        if cost < best_cost:
+            best_cost = cost
+            best = p
+    return best
+
+
+def tokens_to_part(
+    tokens: Sequence[Token],
+    *,
+    key_obj: m21.key.Key,
+    default_octave: int = 4,
+    color_spans: Optional[List[Tuple[int, int, str]]] = None,
+) -> m21.stream.Part:
+    part = m21.stream.Part()
+    part.insert(0.0, key_obj)
+
+    color_for: Dict[int, str] = {}
+    if color_spans:
+        for a, b, c in color_spans:
+            for i in range(a, b):
+                color_for[i] = c
+
+    tonic_pc = key_obj.tonic.pitchClass
+    prev: Optional[m21.pitch.Pitch] = None
+
+    for i, tok in enumerate(tokens):
+        if tok.startswith("R:"):
+            ql = float(tok.split(":")[1])
+            part.append(m21.note.Rest(quarterLength=ql))
+            prev = None
+            continue
+
+        if tok.startswith("N:"):
+            _, pc_s, dur_s = tok.split(":")
+            rel_pc = int(pc_s)
+            ql = float(dur_s)
+
+            target_pc = (tonic_pc + rel_pc) % 12
+            p = _choose_pitch_nearby(target_pc, prev, default_octave, max_oct_off=1)
+            n = m21.note.Note(p, quarterLength=ql)
+
+            col = color_for.get(i)
+            if col:
+                try:
+                    n.style.color = col
+                except Exception:
+                    pass
+
+            part.append(n)
+            prev = p
+
+    return part
+
+
+# ----------------------------
+# Harmony realisation (kept largely as-is)
+# ----------------------------
 
 def _add_rn_label(el: m21.base.Music21Object, label: str) -> None:
-    """
-    Attach a printable label to a chord/rest for score display.
-    Uses lyrics because they're reliably rendered by music21.
-    """
     try:
         el.addLyric(label)
     except Exception:
         pass
 
 
-def _rn_normalise_dim_symbol(rn: str) -> str:
-    """
-    Ensure diminished symbol is in the format music21 accepts.
-    We normalise to 'o' (e.g. 'viio7', 'viio42'). If input uses '°'/'ø', convert.
-    """
+def _rn_norm(rn: str) -> str:
     return rn.replace("°", "o").replace("ø", "o")
 
 
-def _nearest_pitch_with_pc(
-    target: m21.pitch.Pitch,
-    pc: int,
-    lo_midi: int,
-    hi_midi: int,
-) -> m21.pitch.Pitch:
-    """
-    Return a pitch with pitchClass=pc that is closest to target (in semitones),
-    constrained to [lo_midi, hi_midi].
-    """
+def _nearest_pitch_with_pc(target: m21.pitch.Pitch, pc: int, lo_midi: int, hi_midi: int) -> m21.pitch.Pitch:
     best: Optional[m21.pitch.Pitch] = None
-    best_dist = 1e9
-
-    # Search octaves around target
+    best_dist = 1e18
     base_oct = target.octave if target.octave is not None else 4
+
     for octv in range(base_oct - 3, base_oct + 4):
         p = m21.pitch.Pitch()
         p.pitchClass = pc
         p.octave = octv
-        midi = p.midi
-        if midi < lo_midi or midi > hi_midi:
+        if not (lo_midi <= p.midi <= hi_midi):
             continue
-        dist = abs(midi - target.midi)
-        if dist < best_dist:
-            best = p
-            best_dist = dist
+        d = abs(p.midi - target.midi)
+        if d < best_dist:
+            best, best_dist = p, d
 
-    # Fallback: clamp target to range and set pc in that octave
     if best is None:
         p = m21.pitch.Pitch()
         p.pitchClass = pc
-        # choose closest octave boundary
-        midi_target = min(max(target.midi, lo_midi), hi_midi)
-        p.midi = midi_target
-        # fix pitchClass by moving within octave
+        p.midi = min(max(target.midi, lo_midi), hi_midi)
         while p.pitchClass != pc and p.midi < hi_midi:
             p.midi += 1
         while p.pitchClass != pc and p.midi > lo_midi:
@@ -417,101 +463,68 @@ def _nearest_pitch_with_pc(
     return best
 
 
-def _voicelead_upper(
-    prev_uppers: List[m21.pitch.Pitch],
-    chord_pcs: List[int],
-    lo_midi: int,
-    hi_midi: int,
-) -> List[m21.pitch.Pitch]:
-    """
-    Choose upper voices (same count as prev_uppers) that minimise movement.
-    Greedy matching: for each previous voice, pick the nearest available chord tone.
-    """
-    remaining_pcs = chord_pcs[:]
-    new_uppers: List[m21.pitch.Pitch] = []
+def _voicelead_upper(prev_uppers: List[m21.pitch.Pitch], chord_pcs: List[int], lo_midi: int, hi_midi: int) -> List[m21.pitch.Pitch]:
+    remaining = chord_pcs[:]
+    new: List[m21.pitch.Pitch] = []
 
     for v in prev_uppers:
-        # pick best pc for this voice
         best_i = 0
-        best_p = _nearest_pitch_with_pc(v, remaining_pcs[0], lo_midi, hi_midi)
-        best_dist = abs(best_p.midi - v.midi)
+        best_p = _nearest_pitch_with_pc(v, remaining[0], lo_midi, hi_midi)
+        best_d = abs(best_p.midi - v.midi)
 
-        for i, pc in enumerate(remaining_pcs[1:], start=1):
+        for i, pc in enumerate(remaining[1:], start=1):
             cand = _nearest_pitch_with_pc(v, pc, lo_midi, hi_midi)
-            dist = abs(cand.midi - v.midi)
-            if dist < best_dist:
-                best_dist = dist
-                best_i = i
-                best_p = cand
+            d = abs(cand.midi - v.midi)
+            if d < best_d:
+                best_i, best_p, best_d = i, cand, d
 
-        new_uppers.append(best_p)
-        remaining_pcs.pop(best_i)
+        new.append(best_p)
+        remaining.pop(best_i)
 
-    # Sort uppers to avoid voice crossing (low->high)
-    new_uppers.sort(key=lambda p: p.midi)
-    return new_uppers
+    new.sort(key=lambda p: p.midi)
+    return new
 
 
 def _voicing_left_hand(
     rn_obj: m21.roman.RomanNumeral,
+    *,
     bass_octave: int = 2,
     prev_chord: Optional[m21.chord.Chord] = None,
     lo: str = "C3",
     hi: str = "C4",
 ) -> m21.chord.Chord:
-    """
-    Left-hand voicing with simple voice-leading.
-
-    - Bass = rn_obj.bass() at bass_octave (respects inversion)
-    - Upper voices chosen to minimise movement from prev_chord (if provided)
-    - Range limited to [lo, hi]
-    """
-    chord_pitches = list(rn_obj.pitches)
-    if not chord_pitches:
+    if not rn_obj.pitches:
         return m21.chord.Chord([])
 
     lo_midi = m21.pitch.Pitch(lo).midi
     hi_midi = m21.pitch.Pitch(hi).midi
 
-    # Bass pitch (fixed by inversion)
     bass = rn_obj.bass()
-    bass_p = m21.pitch.Pitch(bass.name)  # ignore octave from rn_obj
+    bass_p = m21.pitch.Pitch(bass.name)
     bass_p.octave = bass_octave
 
-    # Chord pitch classes (unique)
-    pcs = []
-    for p in chord_pitches:
-        pc = p.pitchClass
+    pcs: List[int] = []
+    for p in rn_obj.pitches:
+        pc = int(p.pitchClass)
         if pc not in pcs:
             pcs.append(pc)
 
-    # Ensure bass pc is included and remove it from upper selection pool
     bass_pc = bass_p.pitchClass
-    upper_pcs = [pc for pc in pcs if pc != bass_pc]
-    if not upper_pcs:
-        upper_pcs = [bass_pc]  # degenerate chord (won't happen often)
+    upper_pcs = [pc for pc in pcs if pc != bass_pc] or [bass_pc]
 
-    # Choose how many upper voices: 2 (triad-ish) or 3 (7th-ish / dense)
-    want_uppers = 3 if len(pcs) >= 4 else 2
-    # If we don't have enough pcs (e.g. 2 unique pcs), allow duplicates
-    while len(upper_pcs) < want_uppers:
+    want = 3 if len(pcs) >= 4 else 2
+    while len(upper_pcs) < want:
         upper_pcs.append(upper_pcs[-1])
+    upper_pcs = upper_pcs[:want]
 
-    upper_pcs = upper_pcs[:want_uppers]
-
-    # If we have a previous chord, voice-lead against its upper voices
     if prev_chord is not None and len(prev_chord.pitches) >= 2:
-        prev_pitches = list(prev_chord.pitches)
-        prev_pitches.sort(key=lambda p: p.midi)
-        prev_uppers = prev_pitches[1:]  # exclude bass
-        # Match count
-        prev_uppers = prev_uppers[-want_uppers:] if len(prev_uppers) >= want_uppers else prev_uppers
-        while len(prev_uppers) < want_uppers:
-            prev_uppers.insert(0, prev_uppers[0])
-        uppers = _voicelead_upper(prev_uppers, upper_pcs, lo_midi, hi_midi)
+        prev = sorted(prev_chord.pitches, key=lambda p: p.midi)[1:]
+        prev = prev[-want:] if len(prev) >= want else prev
+        while len(prev) < want:
+            prev.insert(0, prev[0])
+        uppers = _voicelead_upper(prev, upper_pcs, lo_midi, hi_midi)
     else:
-        # No previous: stack above bass, tightly, within range
-        uppers = []
+        uppers: List[m21.pitch.Pitch] = []
         last = bass_p
         for pc in upper_pcs:
             p = _nearest_pitch_with_pc(last, pc, lo_midi, hi_midi)
@@ -521,33 +534,9 @@ def _voicing_left_hand(
             last = p
         uppers.sort(key=lambda p: p.midi)
 
-    voiced = [bass_p] + uppers
-    ch = m21.chord.Chord(voiced)
-    return ch
+    return m21.chord.Chord([bass_p] + uppers)
 
 
-def make_cadence_template(
-    *,
-    key_obj: m21.key.Key,
-    units_per_beat: int,
-    dur_units: int,
-    octave: int = 4,
-) -> Motif:
-    """
-    Simple diatonic cadence cell ending on tonic:
-      scale degree 1 -> 0 (i.e., 2 -> 1 in 1-based)
-    Fitted to dur_units.
-    """
-    # 0-based: 1 = supertonic, 0 = tonic
-    half = max(1, dur_units // 2)
-    base = [
-        MotifEvent(deg=1, oct=octave, dur_units=half, is_rest=False),
-        MotifEvent(deg=0, oct=octave, dur_units=max(1, dur_units - half), is_rest=False),
-    ]
-    return base
-
-
-# Placement and assembly
 def realise_harmony_part(
     *,
     key_obj: m21.key.Key,
@@ -555,27 +544,14 @@ def realise_harmony_part(
     num_bars: int,
     units_per_beat: int = 2,
     beats_per_bar: int = 4,
-    bass_octave: int = 3,
+    bass_octave: int = 2,
     part_name: str = "Harmony",
 ) -> m21.stream.Part:
-    """
-    Realise a half-bar Roman numeral plan into a chordal accompaniment Part.
-
-    Assumptions:
-      - rn_plan is HALF-BAR resolution: length should be 2 * num_bars
-      - Each RN lasts 2 beats => quarterLength = 2.0
-      - "N" indicates no harmony (rest)
-
-    Returns a music21 Part with Chord/Rest events placed at offsets.
-    """
     units_per_bar = beats_per_bar * units_per_beat
     total_units = num_bars * units_per_bar
-
-    # Each half-bar is 2 beats => 2 * units_per_beat units
     halfbar_units = 2 * units_per_beat
-    expected_len = (total_units // halfbar_units)
+    expected_len = total_units // halfbar_units
 
-    # Clamp/trim/pad rn_plan safely (MVP)
     rns = list(rn_plan[:expected_len])
     while len(rns) < expected_len:
         rns.append("N")
@@ -584,41 +560,40 @@ def realise_harmony_part(
     part.partName = part_name
     part.insert(0.0, key_obj)
 
-    prev_chord: Optional[m21.chord.Chord] = None
-    
+    prev: Optional[m21.chord.Chord] = None
+
     for i, rn in enumerate(rns):
-        offset_units = i * halfbar_units
-        offset_ql = offset_units / float(units_per_beat)
-        dur_ql = halfbar_units / float(units_per_beat)  # == 2.0
+        off_ql = (i * halfbar_units) / float(units_per_beat)
+        dur_ql = halfbar_units / float(units_per_beat)
 
-        rn = rn.strip() if rn else "N"
-
+        rn = (rn or "N").strip()
         if rn == "N":
             r = m21.note.Rest(quarterLength=dur_ql)
             _add_rn_label(r, "N")
-            part.insert(offset_ql, r)
+            part.insert(off_ql, r)
+            prev = None
             continue
 
-        rn_norm = _rn_normalise_dim_symbol(rn)
-
+        rn_norm = _rn_norm(rn)
         try:
             rn_obj = m21.roman.RomanNumeral(rn_norm, key_obj)
-            ch = _voicing_left_hand(rn_obj, bass_octave=bass_octave, prev_chord=prev_chord)
+            ch = _voicing_left_hand(rn_obj, bass_octave=bass_octave, prev_chord=prev)
             ch.duration.quarterLength = dur_ql
-
-            # Label with the (normalised) RN figure you planned
             _add_rn_label(ch, rn_norm)
-
-            part.insert(offset_ql, ch)
-            prev_chord = ch
+            part.insert(off_ql, ch)
+            prev = ch
         except Exception:
             r = m21.note.Rest(quarterLength=dur_ql)
             _add_rn_label(r, "N")
-            part.insert(offset_ql, r)
-            prev_chord = None
+            part.insert(off_ql, r)
+            prev = None
 
     return part
 
+
+# ----------------------------
+# High-level assembly (kept for backward compat)
+# ----------------------------
 
 def realise_piece(
     *,
@@ -628,20 +603,11 @@ def realise_piece(
     num_bars: int,
     units_per_beat: int = 2,
     beats_per_bar: int = 4,
-    rn_plan: Optional[Sequence[str]] = None,  # accepted for future harmony-aware constraints
+    rn_plan: Optional[Sequence[str]] = None,
     color_map: Optional[Dict[str, str]] = None,
 ) -> m21.stream.Part:
-    """
-    Build a single monophonic music21 Part by:
-      1) converting user motif to internal diatonic representation
-      2) applying PCFG structure tokens (M0/SEQ/INV/RET/REP/CAD)
-      3) fitting each realised motif to the event dur_units
-      4) placing motif material onto a half-beat grid timeline
-      5) filling uncovered gaps with rests (Markov infill can replace this later)
-      6) returning a music21 Part
-
-    Collision policy (MVP): if an event overlaps already-filled time, it is skipped.
-    """
+    # This is only used for quick debugging renders. The main pipeline uses:
+    # motif_events_to_token_map + melody_ngram.infill_timeline_with_spans + tokens_to_part
     if color_map is None:
         color_map = {
             "M0": "#1f77b4",
@@ -657,82 +623,53 @@ def realise_piece(
 
     units_per_bar = beats_per_bar * units_per_beat
     total_units = num_bars * units_per_bar
+    base = motif_from_stream(motif_stream, key_obj=key_obj, units_per_beat=units_per_beat)
 
-    # Convert motif to internal diatonic motif
-    base_motif = motif_from_stream(motif_stream, key_obj=key_obj, units_per_beat=units_per_beat)
-
-    # Timeline as a list of (token, is_rest, deg, oct) at unit granularity is overkill;
-    # we'll place as time-sorted note/rest events into a Part.
-    # For collision checks, track occupied units.
-    occupied = [False] * total_units
-
-    # Sort events by time
-    events_sorted = sorted(events, key=lambda e: e.start_units)
-
-    # Collect placed motif fragments as (start_units, motif_fragment, color)
-    placed: List[Tuple[int, Motif, Optional[str]]] = []
-
-    for ev in events_sorted:
-        if ev.start_units < 0 or ev.dur_units <= 0:
-            continue
-        if ev.start_units >= total_units:
-            continue
-
-        start = ev.start_units
-        end = min(total_units, start + ev.dur_units)
-        dur = end - start
-        if dur <= 0:
-            continue
-
-        # Skip if overlaps already-filled time
-        if any(occupied[t] for t in range(start, end)):
-            continue
-
-        # Realise motif token
-        if ev.tok == "CAD":
-            realised = make_cadence_template(
-                key_obj=key_obj,
-                units_per_beat=units_per_beat,
-                dur_units=dur,
-                octave=4,
-            )
-        else:
-            realised = apply_motif_token(base_motif, ev.tok)
-            realised = fit_motif_to_duration(realised, dur)
-
-        # Mark occupied
-        for t in range(start, end):
-            occupied[t] = True
-
-        placed.append((start, realised, color_map.get(ev.tok)))
-
-    # Assemble into a single Part
     part = m21.stream.Part()
     part.insert(0.0, key_obj)
 
-    # Walk through time and emit rests + motif blocks
-    placed.sort(key=lambda x: x[0])
-    cur = 0
+    occupied = [False] * total_units
+    placed: List[Tuple[int, Motif, Optional[str]]] = []
 
-    for start, motif_block, color in placed:
+    for ev in sorted(events, key=lambda e: e.start_units):
+        if ev.start_units < 0 or ev.dur_units <= 0 or ev.start_units >= total_units:
+            continue
+        start = ev.start_units
+        end = min(total_units, start + ev.dur_units)
+        if any(occupied[t] for t in range(start, end)):
+            continue
+
+        if ev.tok == "CAD":
+            block = make_cadence_template(key_obj=key_obj, units_per_beat=units_per_beat, dur_units=end - start, octave=4)
+        else:
+            block = fit_motif_to_duration(apply_motif_token(base, ev.tok), end - start)
+
+        if rn_plan is not None:
+            block = harmonise_motif_block_to_rn(
+                block,
+                key_obj=key_obj,
+                rn_plan=rn_plan,
+                block_start_units=start,
+                units_per_beat=units_per_beat,
+                beats_per_bar=beats_per_bar,
+            )
+
+        for t in range(start, end):
+            occupied[t] = True
+        placed.append((start, block, color_map.get(ev.tok)))
+
+    cur = 0
+    for start, block, col in sorted(placed, key=lambda x: x[0]):
         if start > cur:
-            # gap -> rest (Markov infill can go here later)
-            gap_units = start - cur
-            gap_ql = gap_units / float(units_per_beat)
-            part.append(m21.note.Rest(quarterLength=gap_ql))
+            part.append(m21.note.Rest(quarterLength=(start - cur) / float(units_per_beat)))
             cur = start
 
-        # Emit motif notes/rests
-        block_stream = motif_to_stream(motif_block, key_obj=key_obj, units_per_beat=units_per_beat, color=color)
-        for el in block_stream.notesAndRests:
+        for el in motif_to_stream(block, key_obj=key_obj, units_per_beat=units_per_beat, color=col).notesAndRests:
             part.append(el)
+        cur += sum(e.dur_units for e in block)
 
-        cur += sum(ev.dur_units for ev in motif_block)
-
-    # Tail rest
     if cur < total_units:
-        tail_ql = (total_units - cur) / float(units_per_beat)
-        part.append(m21.note.Rest(quarterLength=tail_ql))
+        part.append(m21.note.Rest(quarterLength=(total_units - cur) / float(units_per_beat)))
 
     return part
 
@@ -747,7 +684,7 @@ def realise_score(
     units_per_beat: int = 2,
     beats_per_bar: int = 4,
 ) -> m21.stream.Score:
-    melody_part = realise_piece(
+    mel = realise_piece(
         key_obj=key_obj,
         motif_stream=motif_stream,
         events=events,
@@ -756,7 +693,7 @@ def realise_score(
         units_per_beat=units_per_beat,
         beats_per_bar=beats_per_bar,
     )
-    harmony_part = realise_harmony_part(
+    harm = realise_harmony_part(
         key_obj=key_obj,
         rn_plan=rn_plan,
         num_bars=num_bars,
@@ -764,38 +701,7 @@ def realise_score(
         beats_per_bar=beats_per_bar,
         bass_octave=2,
     )
-
     sc = m21.stream.Score()
-    sc.insert(0.0, melody_part)
-    sc.insert(0.0, harmony_part)
+    sc.insert(0.0, mel)
+    sc.insert(0.0, harm)
     return sc
-
-
-if __name__ == "__main__":
-    # Example usage
-    key = m21.key.Key('C')
-    motif_stream = m21.stream.Stream()
-    motif_stream.append(m21.note.Note('C4', quarterLength=0.5))
-    motif_stream.append(m21.note.Note('D4', quarterLength=0.5))
-    motif_stream.append(m21.note.Note('E4', quarterLength=1.0))
-
-    events = [
-        Event(tok="M0", start_units=0, dur_units=8),
-        Event(tok="SEQ+2", start_units=8, dur_units=8),
-        Event(tok="INV", start_units=16, dur_units=8),
-        Event(tok="CAD", start_units=24, dur_units=8),
-    ]
-
-    rn_plan = ["I", "vi", "IV", "V", "I63", "vi", "V", "I"]  # Example harmony plan for 4 bars
-
-    score = realise_score(
-        key_obj=key,
-        motif_stream=motif_stream,
-        events=events,
-        rn_plan=rn_plan,
-        num_bars=4,
-        units_per_beat=2,
-        beats_per_bar=4,
-    )
-
-    score.show()
