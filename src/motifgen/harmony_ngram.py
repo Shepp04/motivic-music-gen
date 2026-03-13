@@ -13,7 +13,7 @@ Mode = str  # "major" | "minor"
 Function = str  # "T" | "PD" | "D" | "UNK"
 
 # Keep chord vocabulary simple/stable for consonance
-_ALLOWED_FIGS = {"", "63", "7", "43", "42"}  # or just {""} for root-position triads
+_ALLOWED_FIGS = {"", "63", "7",}  # or just {""} for root-position triads
 
 _DIATONIC_MAJOR = {"I", "ii", "iii", "IV", "V", "vi", "viio"}
 _DIATONIC_MINOR = {"i", "iio", "III", "iv", "V", "VI", "VII", "viio"}  # harmonic-minor-friendly

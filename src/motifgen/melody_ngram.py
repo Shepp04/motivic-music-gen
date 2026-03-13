@@ -93,6 +93,7 @@ def _rn_root_is_V(rn: str) -> bool:
 # Harmony utilities
 # ----------------------------
 
+
 def chord_pc_sets_from_rn_plan(rn_plan: Sequence[str], *, key_obj: m21.key.Key) -> List[set[int]]:
     tonic_pc = key_obj.tonic.pitchClass
     out: List[set[int]] = []
