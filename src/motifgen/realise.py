@@ -131,27 +131,69 @@ def apply_motif_token(base: Motif, tok: str) -> Motif:
 
 
 def fit_motif_to_duration(motif: Motif, target_units: int) -> Motif:
+    """
+    Safe fit: ensures sum(dur_units)==target_units and NEVER loops forever.
+
+    Policy:
+      - If target_units is smaller than the minimum possible (len(motif_nonzero)),
+        truncate the motif to fit (keep earliest events).
+      - Otherwise do your scale+round, then adjust with bounded passes.
+    """
     if target_units <= 0:
         return []
+
+    # Drop empty motif
+    if not motif:
+        return [MotifEvent(deg=0, oct=4, dur_units=target_units, is_rest=True)]
+
+    # Minimum possible duration if each event must be >=1 unit
+    min_units = len(motif)
+    if target_units < min_units:
+        # Truncate to exactly target_units events of 1 unit each.
+        # Keep first (target_units) events; if you prefer “keep shape”, keep first events.
+        trimmed = motif[:target_units]
+        return [MotifEvent(ev.deg, ev.oct, 1, ev.is_rest) for ev in trimmed]
+
     total = sum(ev.dur_units for ev in motif)
     if total <= 0:
-        return [MotifEvent(0, 4, target_units, True)]
+        return [MotifEvent(deg=0, oct=4, dur_units=target_units, is_rest=True)]
 
-    scale = target_units / total
-    scaled = [MotifEvent(ev.deg, ev.oct, max(1, int(round(ev.dur_units * scale))), ev.is_rest) for ev in motif]
+    # Scale and round (>=1)
+    scaled: List[MotifEvent] = []
+    for ev in motif:
+        new_d = max(1, int(round(ev.dur_units * (target_units / total))))
+        scaled.append(MotifEvent(ev.deg, ev.oct, new_d, ev.is_rest))
 
-    diff = target_units - sum(ev.dur_units for ev in scaled)
-    i = 0
-    while diff != 0 and scaled:
-        ev = scaled[i % len(scaled)]
-        if diff > 0:
-            scaled[i % len(scaled)] = MotifEvent(ev.deg, ev.oct, ev.dur_units + 1, ev.is_rest)
-            diff -= 1
-        else:
+    # Fix to exact target with a bounded adjustment loop
+    cur = sum(ev.dur_units for ev in scaled)
+    diff = target_units - cur
+
+    # First, if we need to subtract, only subtract from events with dur>1
+    if diff < 0:
+        i = 0
+        guard = 0
+        while diff < 0 and guard < 10_000:
+            ev = scaled[i % len(scaled)]
             if ev.dur_units > 1:
                 scaled[i % len(scaled)] = MotifEvent(ev.deg, ev.oct, ev.dur_units - 1, ev.is_rest)
                 diff += 1
-        i += 1
+            i += 1
+            guard += 1
+
+        # If still negative, we hit the floor (all 1s). Truncate to fit.
+        if diff < 0:
+            # Keep first target_units events, all 1 unit
+            return [MotifEvent(ev.deg, ev.oct, 1, ev.is_rest) for ev in scaled[:target_units]]
+
+    # If we need to add, distribute +1s
+    if diff > 0:
+        i = 0
+        while diff > 0:
+            ev = scaled[i % len(scaled)]
+            scaled[i % len(scaled)] = MotifEvent(ev.deg, ev.oct, ev.dur_units + 1, ev.is_rest)
+            diff -= 1
+            i += 1
+
     return scaled
 
 
@@ -279,7 +321,7 @@ def motif_block_to_tokens_harmony_aware(
     out: List[Token] = []
     t = block_start_units
 
-    for ev in motif:
+    for idx, ev in enumerate(motif):
         ql = float(ev.dur_units / float(units_per_beat))
 
         if ev.is_rest:
@@ -294,10 +336,22 @@ def motif_block_to_tokens_harmony_aware(
             hi = t // halfbar_units
             rn = rn_plan[hi] if 0 <= hi < len(rn_plan) else "N"
             if _rn_root_is_V(rn):
-                if rel_pc == 10:  # b7 -> 7
+                if rel_pc == 10:
                     rel_pc = 11
-                elif rel_pc == 8:  # b6 -> 6
-                    rel_pc = 9
+                if rel_pc == 8:
+                    prev_note_pc = next((int(out[j].split(":")[1]) for j in range(len(out)-1, -1, -1) if out[j].startswith("N:")), None)
+                    next_note_pc = None
+                    for k in range(idx + 1, len(motif)):
+                        if motif[k].is_rest:
+                            continue
+                        p2 = pitch_from_deg_oct(motif[k].deg, motif[k].oct, key_obj)
+                        next_note_pc = (p2.pitchClass - tonic_pc) % 12
+                        if next_note_pc == 10:
+                            next_note_pc = 11  # because we would raise it
+                        break
+
+                    if (prev_note_pc in (11, 10)) or (next_note_pc in (11, 10)):
+                        rel_pc = 9
 
         out.append(f"N:{int(rel_pc)}:{ql}")
         t += ev.dur_units
@@ -542,7 +596,7 @@ def realise_harmony_part(
     key_obj: m21.key.Key,
     rn_plan: Sequence[str],
     num_bars: int,
-    units_per_beat: int = 2,
+    units_per_beat: int = 4,
     beats_per_bar: int = 4,
     bass_octave: int = 2,
     part_name: str = "Harmony",
@@ -601,7 +655,7 @@ def realise_piece(
     motif_stream: m21.stream.Stream,
     events: Sequence[Event],
     num_bars: int,
-    units_per_beat: int = 2,
+    units_per_beat: int = 4,
     beats_per_bar: int = 4,
     rn_plan: Optional[Sequence[str]] = None,
     color_map: Optional[Dict[str, str]] = None,
@@ -681,7 +735,7 @@ def realise_score(
     events: Sequence[Event],
     rn_plan: Sequence[str],
     num_bars: int,
-    units_per_beat: int = 2,
+    units_per_beat: int = 4,
     beats_per_bar: int = 4,
 ) -> m21.stream.Score:
     mel = realise_piece(

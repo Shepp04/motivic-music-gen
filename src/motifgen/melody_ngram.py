@@ -17,18 +17,9 @@ _NOTE_RE = re.compile(r"^N:(\d+):([0-9.]+)$")
 _REST_RE = re.compile(r"^R:([0-9.]+)$")
 _RN_ROOT_RE = re.compile(r"^([ivIV]+o?)")
 
-# ----------------------------
-# Mode constraints
-# ----------------------------
-
 Mode = str  # "major" | "minor"
-
 MAJOR_PCS = {0, 2, 4, 5, 7, 9, 11}
-HARM_MINOR_PCS = {0, 2, 3, 5, 7, 8, 10, 11}  # harmonic minor (raised 7 allowed)
-
-
-def allowed_note_pcs(mode: Mode) -> set[int]:
-    return set(MAJOR_PCS) if mode == "major" else set(HARM_MINOR_PCS)
+HARM_MINOR_PCS = {0, 2, 3, 5, 7, 8, 10, 11}  # raised 7 allowed
 
 
 # ----------------------------
@@ -43,26 +34,26 @@ def is_rest(tok: str) -> bool:
     return _REST_RE.match(tok) is not None
 
 
-def _rn_root_is_V(rn: str) -> bool:
-    if not rn or rn == "N":
-        return False
-    s = rn.strip().replace("°", "o").replace("ø", "o").split("/")[0]
-    m = _RN_ROOT_RE.match(s)
-    return bool(m and m.group(1) == "V")
-
 def pc_of(tok: str) -> Optional[int]:
     m = _NOTE_RE.match(tok)
     return int(m.group(1)) if m else None
 
 
-def token_dur_units(tok: str, units_per_beat: int) -> int:
+def ql_of(tok: str) -> Optional[float]:
     m = _NOTE_RE.match(tok)
     if m:
-        return max(1, int(round(float(m.group(2)) * units_per_beat)))
+        return float(m.group(2))
     m = _REST_RE.match(tok)
     if m:
-        return max(1, int(round(float(m.group(1)) * units_per_beat)))
-    return 0
+        return float(m.group(1))
+    return None
+
+
+def token_dur_units(tok: str, units_per_beat: int) -> int:
+    ql = ql_of(tok)
+    if ql is None:
+        return 0
+    return max(1, int(round(ql * units_per_beat)))
 
 
 def last_note_pc(tokens: Sequence[str]) -> Optional[int]:
@@ -77,8 +68,29 @@ def pc_dist(a: int, b: int) -> int:
     return min(d, 12 - d)
 
 
+def allowed_note_pcs(mode: Mode) -> set[int]:
+    return set(MAJOR_PCS) if mode == "major" else set(HARM_MINOR_PCS)
+
+
+def halfbar_index_for_unit(cur_unit: int, *, units_per_beat: int) -> int:
+    return cur_unit // (2 * units_per_beat)
+
+
+def is_strong_beat(cur_unit: int, *, units_per_beat: int, beats_per_bar: int, strong_beats: Tuple[int, ...]) -> bool:
+    beat = (cur_unit // units_per_beat) % beats_per_bar
+    return beat in strong_beats
+
+
+def _rn_root_is_V(rn: str) -> bool:
+    if not rn or rn == "N":
+        return False
+    s = rn.strip().replace("°", "o").replace("ø", "o").split("/")[0]
+    m = _RN_ROOT_RE.match(s)
+    return bool(m and m.group(1) == "V")
+
+
 # ----------------------------
-# Chord tone sets from RN plan
+# Harmony utilities
 # ----------------------------
 
 def chord_pc_sets_from_rn_plan(rn_plan: Sequence[str], *, key_obj: m21.key.Key) -> List[set[int]]:
@@ -89,29 +101,12 @@ def chord_pc_sets_from_rn_plan(rn_plan: Sequence[str], *, key_obj: m21.key.Key) 
         if rn == "N":
             out.append(set())
             continue
-        rn_norm = rn.replace("°", "o").replace("ø", "o")
         try:
-            rn_obj = m21.roman.RomanNumeral(rn_norm, key_obj)
-            pcs_rel = {(pc - tonic_pc) % 12 for pc in rn_obj.pitchClasses}
-            out.append(pcs_rel)
+            rn_obj = m21.roman.RomanNumeral(rn.replace("°", "o").replace("ø", "o"), key_obj)
+            out.append({(pc - tonic_pc) % 12 for pc in rn_obj.pitchClasses})
         except Exception:
             out.append(set())
     return out
-
-
-def halfbar_index_for_unit(cur_unit: int, *, units_per_beat: int) -> int:
-    return cur_unit // (2 * units_per_beat)
-
-
-def is_strong_beat(
-    cur_unit: int,
-    *,
-    units_per_beat: int,
-    beats_per_bar: int,
-    strong_beats: Tuple[int, ...],
-) -> bool:
-    beat = (cur_unit // units_per_beat) % beats_per_bar
-    return beat in strong_beats
 
 
 # ----------------------------
@@ -136,7 +131,6 @@ class NGramModel:
         order = min(self.k, len(ctx) + 1)
         ctx = ctx[-(order - 1):] if order > 1 else ()
         counts = self.counts_by_order[order - 1].get(ctx)
-
         if counts is None and order > 1:
             return self.prob(tok, ctx[1:])
 
@@ -146,8 +140,14 @@ class NGramModel:
         V = len(self.vocab)
         return (c + self.alpha) / (total + self.alpha * V)
 
-    def sample_weighted(self, ctx: Context, rng: random.Random, subset: Sequence[Token], prev_pc: Optional[int], lam: float) -> Token:
-        # weight = P_ngram(tok|ctx) * exp(-lam * pc_dist(prev, tok_pc))
+    def sample_weighted(
+        self,
+        ctx: Context,
+        rng: random.Random,
+        subset: Sequence[Token],
+        prev_pc: Optional[int],
+        lam: float,
+    ) -> Token:
         weights: List[float] = []
         for t in subset:
             w = self.prob(t, ctx)
@@ -160,6 +160,7 @@ class NGramModel:
         s = sum(weights)
         if s <= 0:
             return rng.choice(list(subset))
+
         x = rng.random() * s
         acc = 0.0
         for t, w in zip(subset, weights):
@@ -172,6 +173,7 @@ class NGramModel:
 def train_ngram(seqs: Iterable[Sequence[Token]], cfg: NGramConfig) -> NGramModel:
     seqs_list: List[List[Token]] = []
     vocab_set = set()
+
     for s in seqs:
         s2 = [t for t in s if t != "BAR"]
         if not s2:
@@ -206,104 +208,75 @@ def train_ngram(seqs: Iterable[Sequence[Token]], cfg: NGramConfig) -> NGramModel
 
 
 # ----------------------------
-# Infill
+# Infill configuration
 # ----------------------------
 
 @dataclass
 class InfillConfig:
-    units_per_beat: int = 2
+    units_per_beat: int = 4
     dur_set: Tuple[float, ...] = (2.0, 1.0, 0.5, 0.25)
-    max_consecutive_rests: int = 2
-    seed: Optional[int] = None
 
-    # Voice leading (soft)
+    allow_rests: bool = True
+    min_rest_ql: float = 1.0
+    max_consecutive_rests: int = 2
+
+    seed: Optional[int] = None
     voice_leading_lambda: float = 0.9
 
-    # Strong-beat harmony behaviour
-    strong_beats: Tuple[int, ...] = (0, 2)  # beats 1 and 3 in 4/4
+    strong_beats: Tuple[int, ...] = (0, 2)  # beats 1 and 3
     beats_per_bar: int = 4
-    strong_beat_pick_closest: bool = False  # if True, deterministically choose closest chord tone
+    strong_beat_pick_closest: bool = False
 
 
-def _fits_duration(tok: Token, remaining_units: int, cfg: InfillConfig) -> bool:
+# ----------------------------
+# Core filtering + block sizing
+# ----------------------------
+
+def _fits(tok: Token, remaining_units: int, cfg: InfillConfig) -> bool:
     du = token_dur_units(tok, cfg.units_per_beat)
     if du <= 0 or du > remaining_units:
         return False
-
-    # require duration to be in dur_set
-    m = _NOTE_RE.match(tok)
-    if m and float(m.group(2)) not in cfg.dur_set:
-        return False
-    m = _REST_RE.match(tok)
-    if m and float(m.group(1)) not in cfg.dur_set:
-        return False
-
-    return True
+    ql = ql_of(tok)
+    return (ql is not None) and (ql in cfg.dur_set)
 
 
-def _mode_filter(subset: Sequence[Token], allowed_pcs: set[int]) -> List[Token]:
-    out: List[Token] = []
-    for t in subset:
-        if is_note(t):
-            pc = pc_of(t)
-            if pc is not None and pc in allowed_pcs:
-                out.append(t)
-        else:
-            out.append(t)  # rests always allowed
+def _block_units(block: Sequence[Token], units_per_beat: int) -> int:
+    return sum(token_dur_units(t, units_per_beat) for t in block)
+
+
+def _trim_or_pad_block(block: List[Token], target_units: int, cfg: InfillConfig) -> List[Token]:
+    """
+    HARD GUARD: ensure block duration == target_units (prevents total_units drift).
+    - Too long: pop tokens from end
+    - Too short: pad with rests (or tonic notes if rests disabled)
+    """
+    out = list(block)
+    cur = _block_units(out, cfg.units_per_beat)
+
+    while out and cur > target_units:
+        cur -= token_dur_units(out.pop(), cfg.units_per_beat)
+
+    while cur < target_units:
+        rem = target_units - cur
+        # choose largest ql that fits rem (so we don't spam tiny tokens)
+        chosen = None
+        for ql in sorted(cfg.dur_set, reverse=True):
+            if int(round(ql * cfg.units_per_beat)) <= rem:
+                chosen = ql
+                break
+        if chosen is None:
+            chosen = min(cfg.dur_set)
+
+        tok = f"R:{chosen}" if cfg.allow_rests else f"N:0:{chosen}"
+        out.append(tok)
+        cur += token_dur_units(tok, cfg.units_per_beat)
+
     return out
 
 
-def _strong_beat_chord_filter(subset: Sequence[Token], chord_pcs: set[int]) -> List[Token]:
-    if not chord_pcs:
-        return list(subset)
-    notes = [t for t in subset if is_note(t) and (pc_of(t) in chord_pcs)]
-    others = [t for t in subset if not is_note(t)]
-    return notes + others if notes else list(subset)
-
-
-def _substitute_pc_token(tok: Token, new_pc: int) -> Optional[Token]:
-    """
-    If tok is NOTE token N:<pc>:<dur>, return same dur with new_pc.
-    """
-    m = _NOTE_RE.match(tok)
-    if not m:
-        return None
-    dur = m.group(2)
-    return f"N:{new_pc}:{dur}"
-
-
-def _apply_raised_minor_over_V(
-    subset: List[Token],
-    *,
-    rn_plan: Sequence[str],
-    key_obj: m21.key.Key,
-    cur_unit: int,
-    units_per_beat: int,
-) -> List[Token]:
-    """
-    In minor key, over V harmony, forbid pcs 8 and 10 (b6, b7) and instead allow 9, 11.
-    Works by filtering candidates; actual substitution is handled after sampling too.
-    """
-    if (key_obj.mode or "").lower() != "minor":
-        return subset
-
-    hi = halfbar_index_for_unit(cur_unit, units_per_beat=units_per_beat)
-    rn = rn_plan[hi] if 0 <= hi < len(rn_plan) else "N"
-    if not _rn_root_is_V(rn):
-        return subset
-
-    forbidden = {8, 10}
-    # Remove forbidden NOTE tokens under V
-    out = []
-    for t in subset:
-        if is_note(t):
-            pc = pc_of(t)
-            if pc in forbidden:
-                continue
-        out.append(t)
-
-    return out if out else subset  # don’t delete everything accidentally
-
+# ----------------------------
+# Gap filler
+# ----------------------------
 
 def fill_gap_tokens(
     *,
@@ -318,20 +291,8 @@ def fill_gap_tokens(
     rn_plan: Optional[Sequence[str]] = None,
     key_obj: Optional[m21.key.Key] = None,
 ) -> List[Token]:
-    """
-    Fill a gap with tokens summing to gap_units.
-
-    Constraints:
-      - ALL generated NOTE tokens must be diatonic to `mode`
-      - On strong beats, optionally constrain notes to chord tones (if chord_pcs_by_halfbar provided)
-      - Soft voice-leading preference to stay near previous note pc
-    """
     allowed_pcs = allowed_note_pcs(mode)
-
-    vocab_set = set(model.vocab)
-    if key_obj is None:
-        # fallback: construct from mode + C tonic
-        key_obj = m21.key.Key("C", "minor" if mode == "minor" else "major")
+    key_obj = key_obj or m21.key.Key("C", "minor" if mode == "minor" else "major")
 
     out: List[Token] = []
     remaining = gap_units
@@ -342,67 +303,84 @@ def fill_gap_tokens(
         ctx = tuple(context[-(model.k - 1):]) if model.k > 1 else ()
         prev_pc = last_note_pc(context)
 
-        subset = [t for t in model.vocab if _fits_duration(t, remaining, cfg)]
-        if not subset:
-            # fallback: smallest rest
+        # 1) duration filter
+        cand = [t for t in model.vocab if _fits(t, remaining, cfg)]
+        if not cand:
+            # smallest safe pad
             ql = min(cfg.dur_set)
-            du = max(1, int(round(ql * cfg.units_per_beat)))
-            tok = f"R:{ql}"
+            tok = f"R:{ql}" if cfg.allow_rests else f"N:0:{ql}"
+            du = token_dur_units(tok, cfg.units_per_beat)
             out.append(tok)
             context.append(tok)
             remaining -= du
-            rest_run += 1
             cur_unit += du
+            rest_run = rest_run + 1 if is_rest(tok) else 0
             continue
 
-        # Avoid too many consecutive rests
+        # 2) rest policy
+        if not cfg.allow_rests:
+            nonrests = [t for t in cand if not is_rest(t)]
+            cand = nonrests or cand
+        else:
+            # forbid short rests after the first token of a gap (avoid syncopated micro-rests)
+            if cur_unit != gap_start_unit:
+                cand2 = []
+                for t in cand:
+                    if is_rest(t) and (ql_of(t) or 0.0) < cfg.min_rest_ql:
+                        continue
+                    cand2.append(t)
+                cand = cand2 or cand
+
         if rest_run >= cfg.max_consecutive_rests:
-            nonrests = [t for t in subset if not is_rest(t)]
-            subset = nonrests or subset
+            nonrests = [t for t in cand if not is_rest(t)]
+            cand = nonrests or cand
 
-        # mode constraint on ALL notes
-        subset = _mode_filter(subset, allowed_pcs)
-        if not subset:
-            # if mode filtering killed everything, allow rests only
-            subset = [t for t in model.vocab if is_rest(t) and _fits_duration(t, remaining, cfg)]
-            if not subset:
-                subset = [f"R:{min(cfg.dur_set)}"]
+        # 3) mode constraint on ALL notes
+        cand2 = []
+        for t in cand:
+            if is_note(t):
+                pc = pc_of(t)
+                if pc is not None and pc in allowed_pcs:
+                    cand2.append(t)
+            else:
+                cand2.append(t)
+        cand = cand2 or cand
 
-        if rn_plan is not None:
-            subset = _apply_raised_minor_over_V(
-                subset,
-                rn_plan=rn_plan,
-                key_obj=key_obj,
-                cur_unit=cur_unit,
-                units_per_beat=cfg.units_per_beat,
-            )
+        # 4) minor-over-V raised scale degrees filter (forbid b6/b7 pcs 8/10 under V)
+        if rn_plan is not None and (key_obj.mode or "").lower() == "minor":
+            hi = halfbar_index_for_unit(cur_unit, units_per_beat=cfg.units_per_beat)
+            rn = rn_plan[hi] if 0 <= hi < len(rn_plan) else "N"
+            if _rn_root_is_V(rn):
+                cand2 = [t for t in cand if not (is_note(t) and (pc_of(t) in {8, 10}))]
+                cand = cand2 or cand
 
-        # Strong-beat chord constraint (optional)
+        # 5) strong-beat chord tone constraint (optional)
+        chord_pcs = set()
+        strong = False
         if chord_pcs_by_halfbar is not None and is_strong_beat(
             cur_unit,
             units_per_beat=cfg.units_per_beat,
             beats_per_bar=cfg.beats_per_bar,
             strong_beats=cfg.strong_beats,
         ):
+            strong = True
             hi = halfbar_index_for_unit(cur_unit, units_per_beat=cfg.units_per_beat)
             chord_pcs = chord_pcs_by_halfbar[hi] if 0 <= hi < len(chord_pcs_by_halfbar) else set()
-            subset = _strong_beat_chord_filter(subset, chord_pcs)
 
-            # Optional: pick closest chord tone deterministically
-            if cfg.strong_beat_pick_closest and prev_pc is not None and chord_pcs:
-                chord_notes = [t for t in subset if is_note(t) and (pc_of(t) in chord_pcs)]
-                if chord_notes:
-                    best = min(
-                        chord_notes,
-                        key=lambda t: (pc_dist(prev_pc, pc_of(t)), -model.prob(t, ctx)),
-                    )
-                    tok = best
-                else:
-                    tok = model.sample_weighted(ctx, rng, subset, prev_pc, cfg.voice_leading_lambda)
+            if chord_pcs:
+                notes = [t for t in cand if is_note(t) and (pc_of(t) in chord_pcs)]
+                others = [t for t in cand if not is_note(t)]
+                cand = (notes + others) if notes else cand
+
+        # 6) choose token
+        if cfg.strong_beat_pick_closest and strong and chord_pcs and prev_pc is not None:
+            chord_notes = [t for t in cand if is_note(t) and (pc_of(t) in chord_pcs)]
+            if chord_notes:
+                tok = min(chord_notes, key=lambda t: (pc_dist(prev_pc, pc_of(t)), -model.prob(t, ctx)))
             else:
-                tok = model.sample_weighted(ctx, rng, subset, prev_pc, cfg.voice_leading_lambda)
+                tok = model.sample_weighted(ctx, rng, cand, prev_pc, cfg.voice_leading_lambda)
         else:
-            tok = model.sample_weighted(ctx, rng, subset, prev_pc, cfg.voice_leading_lambda)
+            tok = model.sample_weighted(ctx, rng, cand, prev_pc, cfg.voice_leading_lambda)
 
         du = token_dur_units(tok, cfg.units_per_beat)
         if du <= 0 or du > remaining:
@@ -416,6 +394,10 @@ def fill_gap_tokens(
 
     return out
 
+
+# ----------------------------
+# Timeline assembly (with spans)
+# ----------------------------
 
 def infill_timeline_with_spans(
     *,
@@ -434,7 +416,7 @@ def infill_timeline_with_spans(
     evs = sorted(events, key=lambda e: e.start_units)
 
     out: List[Token] = []
-    context: List[Token] = []
+    ctx: List[Token] = []
     spans: List[Tuple[int, int, str]] = []
     cur = 0
 
@@ -442,11 +424,16 @@ def infill_timeline_with_spans(
         s = max(0, e.start_units)
         e_end = min(total_units, e.start_units + e.dur_units)
 
+        if s < cur:
+            # overlap with already-filled timeline; skip this event (MVP policy)
+            continue
+
+        # gap before event
         if s > cur:
             out.extend(
                 fill_gap_tokens(
                     model=model,
-                    context=context,
+                    context=ctx,
                     gap_units=s - cur,
                     gap_start_unit=cur,
                     cfg=cfg,
@@ -459,18 +446,11 @@ def infill_timeline_with_spans(
             )
             cur = s
 
-        block = motif_tokens_by_event.get((e.start_units, e.dur_units), [])
-        if not block:
-            # deterministic rest fill
-            remaining = e_end - cur
-            while remaining > 0:
-                ql = min(cfg.dur_set)
-                du = max(1, int(round(ql * cfg.units_per_beat)))
-                if du > remaining:
-                    ql = max(d for d in cfg.dur_set if int(round(d * cfg.units_per_beat)) <= remaining)
-                    du = int(round(ql * cfg.units_per_beat))
-                block.append(f"R:{ql}")
-                remaining -= du
+        # motif block for this event
+        block = list(motif_tokens_by_event.get((e.start_units, e.dur_units), []))
+
+        # HARD GUARD: ensure block sums to exactly e.dur_units
+        block = _trim_or_pad_block(block, e.dur_units, cfg)
 
         a = len(out)
         out.extend(block)
@@ -480,21 +460,29 @@ def infill_timeline_with_spans(
         if col and b > a:
             spans.append((a, b, col))
 
-        context.extend(block)
+        ctx.extend(block)
         cur = e_end
 
+    # tail
     if cur < total_units:
         out.extend(
             fill_gap_tokens(
                 model=model,
-                context=context,
+                context=ctx,
                 gap_units=total_units - cur,
                 gap_start_unit=cur,
                 cfg=cfg,
                 rng=rng,
                 mode=mode,
                 chord_pcs_by_halfbar=chord_pcs_by_halfbar,
+                rn_plan=rn_plan,
+                key_obj=key_obj,
             )
         )
+
+    # final sanity: prevents "expected 128 got 132" from ever returning silently
+    total = _block_units(out, cfg.units_per_beat)
+    if total != total_units:
+        raise ValueError(f"infill_timeline_with_spans duration mismatch: got {total}, expected {total_units}")
 
     return out, spans

@@ -2,7 +2,7 @@
 import random
 import json
 import music21 as m21
-from src.motifgen import pcfg, realise, harmony_ngram, melody_ngram
+from src.motifgen import pcfg, realise, harmony_ngram, melody_ngram, accompaniment
 
 def load_jsonl(path: str):
     out = []
@@ -17,11 +17,20 @@ def load_jsonl(path: str):
 
 def make_demo_motif() -> m21.stream.Stream:
     motif_stream = m21.stream.Stream()
-    motif_stream.append(m21.note.Note("E4", quarterLength=0.25))
+    motif_stream.append(m21.note.Note("E4", quarterLength=0.5))
     motif_stream.append(m21.note.Note("D4", quarterLength=0.25))
-    motif_stream.append(m21.note.Note("C4", quarterLength=0.5))
+    motif_stream.append(m21.note.Note("C4", quarterLength=0.25))
     motif_stream.append(m21.note.Note("D4", quarterLength=0.5))
-    motif_stream.append(m21.note.Note("C4", quarterLength=0.5))
+    motif_stream.append(m21.note.Note("B4", quarterLength=0.5))
+    #motif_stream.append(m21.note.Note("E4", quarterLength=0.5))
+    #motif_stream.append(m21.note.Note("D4", quarterLength=0.5))
+    #motif_stream.append(m21.note.Note("C4", quarterLength=1.0))
+    #motif_stream.append(m21.note.Note("A3", quarterLength=0.5))
+    #motif_stream.append(m21.note.Note("A3", quarterLength=1.0))
+    #motif_stream.append(m21.note.Note("C4", quarterLength=0.25))
+    #motif_stream.append(m21.note.Note("D4", quarterLength=0.25))
+    #motif_stream.append(m21.note.Note("C4", quarterLength=0.25))
+    #motif_stream.append(m21.note.Note("B3", quarterLength=0.25))
     #motif_stream.append(m21.note.Note("C4", quarterLength=0.25))
     #motif_stream.append(m21.note.Note("G3", quarterLength=0.5))
     #motif_stream.append(m21.note.Note("D4", quarterLength=1.0))
@@ -34,13 +43,14 @@ if __name__ == "__main__":
     us['musescoreDirectPNGPath'] = "/Applications/MuseScore 4.app"
 
     # 0) Config
-    seed = 28 #74 #random.randint(0, 100) # 42
+    seed = 69 #random.randint(0, 100) # 42 # 74 #28 #random.randint(0, 100) # 42 # 44 # 82
     num_bars = 4
     units_per_beat = 4
     beats_per_bar = 4
     total_units = num_bars * beats_per_bar * units_per_beat
-    density = 0.80
+    density = 0.64
     mode = "minor" # "minor"  # "major"
+    allow_rests = True
 
     print("Seed:", seed)
     print("Mode:", mode)
@@ -48,9 +58,9 @@ if __name__ == "__main__":
     train_items = load_jsonl("data/train.jsonl")
 
     # 2) Sample phrase plan (PCFG events)
-    grammar = pcfg.make_minimal_mvp_grammar(density=density)
+    grammar = pcfg.make_grammar(density=density)
     pcfg_cfg = pcfg.SamplerConfig(seed=seed, units_per_beat=units_per_beat, density=density, min_gap_units=0)
-    events = grammar.sample_plan(num_bars=num_bars, cfg=pcfg_cfg, motif_dur_units=(8,))
+    events = grammar.sample_plan(num_bars=num_bars, cfg=pcfg_cfg, motif_dur_units=(8,),)
 
     print("PCFG events:")
     for e in events:
@@ -67,8 +77,8 @@ if __name__ == "__main__":
     #func_plan, rn_plan = harmony_ngram.sample_harmony_plan(harm_model)
 
     # 4) Train 2 harmony models - 1 for major, 1 for minor
-    major_cfg = harmony_ngram.HarmonyConfig(num_bars=num_bars, mode="major", seed=seed)
-    minor_cfg = harmony_ngram.HarmonyConfig(num_bars=num_bars, mode="minor", seed=seed)
+    major_cfg = harmony_ngram.HarmonyConfig(num_bars=num_bars, mode="major", seed=seed, k_func=6, alpha_func=0.25)
+    minor_cfg = harmony_ngram.HarmonyConfig(num_bars=num_bars, mode="minor", seed=seed, k_func=6, alpha_func=0.25)
 
     harm_major = harmony_ngram.train_harmony_model(train_items, major_cfg)
     harm_minor = harmony_ngram.train_harmony_model(train_items, minor_cfg)
@@ -87,6 +97,9 @@ if __name__ == "__main__":
 
     # 6) Build motif blocks as tokens for each event window
     base_motif = realise.motif_from_stream(motif_stream, key_obj=key_obj, units_per_beat=units_per_beat)
+    print("\nBase motif events:")
+    for ev in base_motif:
+        print(" ", ev)
     motif_tokens_by_event = realise.motif_events_to_token_map(
         key_obj=key_obj,
         units_per_beat=units_per_beat,
@@ -95,22 +108,31 @@ if __name__ == "__main__":
         rn_plan=rn_plan,
         beats_per_bar=beats_per_bar,
     )
+    print("\nMotif tokens by event:")
+    for event, tokens in motif_tokens_by_event.items():
+        print(f" {event}: {tokens}")
 
     # 7) Infill gaps with the melody n-gram
     infill_cfg = melody_ngram.InfillConfig(
         units_per_beat=units_per_beat,
         dur_set=(2.0, 1.0, 0.5),
+        allow_rests=allow_rests,
         max_consecutive_rests=2,
         seed=seed,
     )
+    print("\nInfill config:", infill_cfg)
 
     color_map = {
         "M0": "#1f77b4",
         "REP": "#1f77b4",
         "SEQ+1": "#2ca02c",
         "SEQ+2": "#2ca02c",
-        "SEQ-1": "#2ca02c",
-        "SEQ-2": "#2ca02c",
+        "SEQ+3": "#2ca02c",
+        "SEQ+4": "#2ca02c",
+        "SEQ-1": "#04d9ff",
+        "SEQ-2": "#04d9ff",
+        "SEQ-3": "#04d9ff",
+        "SEQ-4": "#04d9ff",
         "INV": "#d62728",
         "RET": "#9467bd",
         "CAD": "#ff7f0e",
@@ -130,15 +152,19 @@ if __name__ == "__main__":
         key_obj=key_obj,
     )
 
+    sum_units = sum(melody_ngram.token_dur_units(t, units_per_beat) for t in melody_tokens)
+    print("total_units expected:", total_units, "got:", sum_units)
+
     # 8) Realise melody tokens into a music21 part
     melody_part = realise.tokens_to_part(
         tokens=melody_tokens,
         key_obj=key_obj,
-        default_octave=4,
+        default_octave=5,
         color_spans=spans,
     )
     melody_part.partName = "Melody"
 
+    """
     # 9) Realise harmony chords as a separate Part with RN labels
     harmony_part = realise.realise_harmony_part(
         key_obj=key_obj,
@@ -149,11 +175,31 @@ if __name__ == "__main__":
         bass_octave=3,
         part_name="Harmony",
     )
+    """
+
+    section = accompaniment.SectionSpec(v_bars=2, f_bars=num_bars-3, e_bars=1)  # or from PCFG sampler
+    style_plan = accompaniment.sample_style_plan(
+        num_bars=num_bars,
+        section=section,
+        mode="by_section",   # or "single"
+        seed=seed,
+    )
+
+    acc_part = accompaniment.realise_accompaniment_part(
+        key_obj=key_obj,
+        rn_plan=rn_plan,
+        style_plan=style_plan,
+        cfg=accompaniment.AccompConfig(units_per_beat=2, beats_per_bar=4, bass_octave=2),
+    )
 
     # 10) Build score + output
     score = m21.stream.Score()
     score.insert(0.0, melody_part)
-    score.insert(0.0, harmony_part)
+    score.insert(0.0, acc_part)
+    #score.insert(0.0, harmony_part)
+
+    for p in score.parts:
+        p.insert(0.0, m21.instrument.Harpsichord())
 
     # Write MIDI
     out_midi = "outputs/midi/demo.mid"

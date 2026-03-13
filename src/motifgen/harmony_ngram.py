@@ -27,6 +27,41 @@ _RN_ROOT_RE = re.compile(r"^([ivIV]+o?)")
 _DIGITS_RE = re.compile(r"\d+")
 
 
+def _rn_root(rn: str) -> str:
+    if not rn or rn == "N":
+        return ""
+    s = rn.strip().replace("°", "o").replace("ø", "o").split("/")[0]
+    m = _RN_ROOT_RE.match(s)
+    return m.group(1) if m else ""
+
+def _strip_figures(rn: str) -> str:
+    # "V42" -> "V", "I63" -> "I", "viio7" -> "viio"
+    root = _rn_root(rn)
+    return root if root else rn
+
+def enforce_root_position_cadence(
+    rn_plan: List[str],
+    *,
+    mode: str,  # "major" | "minor"
+    allow_v7: bool = True,
+) -> List[str]:
+    """
+    Force last two half-bars to be root position:
+      - dominant: V or V7
+      - tonic: I or i
+    """
+    if len(rn_plan) < 2:
+        return rn_plan
+
+    tonic = "I" if mode == "major" else "i"
+    dom = "V7" if allow_v7 else "V"
+
+    rn_plan = list(rn_plan)
+    rn_plan[-2] = dom
+    rn_plan[-1] = tonic
+    return rn_plan
+
+
 def parse_mode_from_key_str(key_str: str) -> Optional[Mode]:
     s = (key_str or "").lower()
     if "major" in s:
@@ -358,4 +393,5 @@ def realise_function_plan_to_rn(model: HarmonyModel, func_plan: Sequence[Functio
 def sample_harmony_plan(model: HarmonyModel) -> Tuple[List[Function], List[str]]:
     func_plan = sample_function_plan(model)
     rn_plan = realise_function_plan_to_rn(model, func_plan)
+    rn_plan = enforce_root_position_cadence(rn_plan, mode=model.cfg.mode, allow_v7=True)
     return func_plan, rn_plan

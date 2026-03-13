@@ -25,3 +25,6 @@ THINGS TO MENTION IN REPORT
 * Octave wrap-around and avoiding large leaps in melody
 * T, PD, D function for realistic harmony
 * Cadence handling
+
+NOTES
+"the grammar generates symbolic form + development operators; the scheduler enforces temporal coverage constraints to prevent degenerate long infill stretches."
