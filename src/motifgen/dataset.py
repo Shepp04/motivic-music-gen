@@ -24,6 +24,9 @@ def load_corpus_ids(limit: int | None) -> list[str]:
     it = m21.corpus.chorales.Iterator(returnType="filename")
     ids: list[str] = []
 
+    if True:
+        return m21.corpus.getComposer("bach")
+
     for chorale_id in it:
         # chorale_id is a string like 'bach/bwv269'
         if isinstance(chorale_id, str) and chorale_id:

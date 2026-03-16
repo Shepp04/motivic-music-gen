@@ -66,6 +66,9 @@ class SystemConfig:
     """
     name: str = "full"
 
+    # High-level structure plan + motif event scheduling
+    use_pcfg_plan: bool = True
+
     # Harmony plan + chord constraints
     use_harmony: bool = True
 
@@ -80,6 +83,49 @@ class SystemConfig:
 
     # Allow rests during infill
     allow_rests: bool = True
+
+    @classmethod
+    def full(cls) -> "SystemConfig":
+        return cls(
+            name="full",
+            use_pcfg_plan=True,
+            use_harmony=True,
+            use_harmony_aware_motif=True,
+            use_harmony_aware_infill=True,
+            use_accompaniment=True,
+            allow_rests=True,
+        )
+
+    @classmethod
+    def melody_only_baseline(cls) -> "SystemConfig":
+        """
+        Baseline (B0): melody n-gram only.
+        No PCFG planning, no motif injection, no harmony conditioning.
+        """
+        return cls(
+            name="baseline_melody_only",
+            use_pcfg_plan=False,
+            use_harmony=False,
+            use_harmony_aware_motif=False,
+            use_harmony_aware_infill=False,
+            use_accompaniment=False,
+            allow_rests=True,
+        )
+
+    @classmethod
+    def structure_only(cls) -> "SystemConfig":
+        """
+        Ablation (A1): PCFG + motif realisation, but no harmony-aware constraints.
+        """
+        return cls(
+            name="ablation_structure_only",
+            use_pcfg_plan=True,
+            use_harmony=True,
+            use_harmony_aware_motif=False,
+            use_harmony_aware_infill=False,
+            use_accompaniment=True,
+            allow_rests=True,
+        )
 
 
 @dataclass(frozen=True)
@@ -213,21 +259,25 @@ def generate_one(
     key_obj = m21.key.Key("a") if mode == "minor" else m21.key.Key("C")
 
     # 1) Phrase plan
-    grammar = pcfg.make_grammar(density=gcfg.density)
-    pcfg_cfg = pcfg.SamplerConfig(
-        seed=seed,
-        units_per_beat=upb,
-        beats_per_bar=bpb,
-        density=gcfg.density,
-        min_gap_units=0,
-    )
+    if scfg.use_pcfg_plan:
+        grammar = pcfg.make_grammar(density=gcfg.density)
+        pcfg_cfg = pcfg.SamplerConfig(
+            seed=seed,
+            units_per_beat=upb,
+            beats_per_bar=bpb,
+            density=gcfg.density,
+            min_gap_units=0,
+        )
 
-    events = grammar.sample_plan(
-        num_bars=num_bars,
-        cfg=pcfg_cfg,
-        motif_dur_units=gcfg.motif_dur_units,
-        motif_dur_probs=gcfg.motif_dur_probs,
-    )
+        events = grammar.sample_plan(
+            num_bars=num_bars,
+            cfg=pcfg_cfg,
+            motif_dur_units=gcfg.motif_dur_units,
+            motif_dur_probs=gcfg.motif_dur_probs,
+        )
+    else:
+        # True melody-only baseline: no structural events, so the infiller owns the whole timeline.
+        events = []
 
     # 2) Harmony plan (or disable)
     if scfg.use_harmony:
@@ -238,19 +288,22 @@ def generate_one(
         rn_plan = ["N"] * (2 * num_bars)
 
     # 3) Motif blocks
-    if motif_stream is None:
-        motif_stream = make_demo_motif()
+    if events:
+        if motif_stream is None:
+            motif_stream = make_demo_motif()
 
-    base_motif = realise.motif_from_stream(motif_stream, key_obj=key_obj, units_per_beat=upb)
+        base_motif = realise.motif_from_stream(motif_stream, key_obj=key_obj, units_per_beat=upb)
 
-    motif_tokens_by_event = realise.motif_events_to_token_map(
-        key_obj=key_obj,
-        units_per_beat=upb,
-        base_motif=base_motif,
-        events=events,
-        rn_plan=rn_plan if scfg.use_harmony_aware_motif and scfg.use_harmony else None,
-        beats_per_bar=bpb,
-    )
+        motif_tokens_by_event = realise.motif_events_to_token_map(
+            key_obj=key_obj,
+            units_per_beat=upb,
+            base_motif=base_motif,
+            events=events,
+            rn_plan=rn_plan if scfg.use_harmony_aware_motif and scfg.use_harmony else None,
+            beats_per_bar=bpb,
+        )
+    else:
+        motif_tokens_by_event = {}
 
     # 4) Infill gaps (melody n-gram)
     infill_cfg = melody_ngram.InfillConfig(
@@ -366,4 +419,40 @@ def generate_many(
     for seed in seeds:
         piece, _ = generate_one(models=models, gcfg=gcfg, scfg=scfg, seed=seed, motif_stream=motif_stream)
         pieces.append(piece)
+    return pieces
+
+
+def default_system_configs() -> List[SystemConfig]:
+    """
+    Canonical systems used in evaluation and ablation studies.
+    """
+    return [
+        SystemConfig.melody_only_baseline(),
+        SystemConfig.structure_only(),
+        SystemConfig.full(),
+    ]
+
+
+def generate_many_systems(
+    *,
+    models: Models,
+    gcfg: GenerateConfig,
+    systems: Sequence[SystemConfig],
+    seeds: Sequence[int],
+    motif_stream: Optional[m21.stream.Stream] = None,
+) -> List[dict]:
+    """
+    Convenience wrapper for evaluation runs over multiple system variants.
+    """
+    pieces: List[dict] = []
+    for scfg in systems:
+        pieces.extend(
+            generate_many(
+                models=models,
+                gcfg=gcfg,
+                scfg=scfg,
+                seeds=seeds,
+                motif_stream=motif_stream,
+            )
+        )
     return pieces

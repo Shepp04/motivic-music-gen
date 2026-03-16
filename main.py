@@ -28,18 +28,13 @@ if __name__ == "__main__":
         units_per_beat=4,
         beats_per_bar=4,
         density=0.50,
-        mode="minor",              # "minor"
-        motif_dur_units=(8,),      # keep fixed to avoid motif augmentation
+        mode="major",              # "minor"
+        motif_dur_units=(16,),      # keep fixed to avoid motif augmentation
         infill_dur_set=(2.0, 1.0, 0.5),
     )
-    scfg = SystemConfig(
-        name="full",
-        use_harmony=True,
-        use_harmony_aware_motif=True,
-        use_harmony_aware_infill=True,
-        use_accompaniment=True,
-        allow_rests=True,
-    )
+    # Swap this for SystemConfig.structure_only() or
+    # SystemConfig.melody_only_baseline() when generating ablations.
+    scfg = SystemConfig.full()
     
     print("Seed:", seed)
     print("Mode:", gcfg.mode)

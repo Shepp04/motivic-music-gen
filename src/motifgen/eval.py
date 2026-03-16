@@ -251,10 +251,14 @@ def strong_beat_chord_tone_rate(
 def motif_coverage(events: Sequence[Event], total_units: int) -> float:
     if total_units <= 0:
         return float("nan")
-    covered = 0
+
+    covered_units = np.zeros(total_units, dtype=bool)
     for e in events:
-        covered += max(0, int(e.dur_units))
-    return float(covered / total_units)
+        start = max(0, int(e.start_units))
+        end = min(total_units, start + max(0, int(e.dur_units)))
+        if end > start:
+            covered_units[start:end] = True
+    return float(np.mean(covered_units))
 
 
 def motif_dispersion(events: Sequence[Event], *, num_bars: int, units_per_beat: int, beats_per_bar: int) -> float:
