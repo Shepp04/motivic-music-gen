@@ -355,7 +355,7 @@ def fill_gap_tokens(
                 cand2 = [t for t in cand if not (is_note(t) and (pc_of(t) in {8, 10}))]
                 cand = cand2 or cand
 
-        # 5) strong-beat chord tone constraint (optional)
+        # 5) apply strong-beat chord tone constraint
         chord_pcs = set()
         strong = False
         if chord_pcs_by_halfbar is not None and is_strong_beat(

@@ -166,7 +166,7 @@ class GenerateConfig:
 @dataclass(frozen=True)
 class Models:
     """
-    Cached trained models so you don't retrain per-piece.
+    Cached trained models
     """
     melody_model: melody_ngram.NGramModel
     harmony_major: harmony_ngram.HarmonyModel
@@ -215,16 +215,62 @@ def train_models(
 # ----------------------------
 
 def make_demo_motif() -> m21.stream.Stream:
-    """
-    Replace this with user input later. Keep it here so batch generation is easy.
-    """
     s = m21.stream.Stream()
     s.append(m21.note.Note("E4", quarterLength=0.25))
     s.append(m21.note.Note("F4", quarterLength=0.25))
     s.append(m21.note.Note("E4", quarterLength=0.25))
     s.append(m21.note.Note("D4", quarterLength=0.25))
     s.append(m21.note.Note("C4", quarterLength=1.0))
+
+    s = m21.stream.Stream()
+    s.append(m21.note.Note("C4", quarterLength=0.25))
+    s.append(m21.note.Note("D4", quarterLength=0.25))
+    s.append(m21.note.Note("E4", quarterLength=0.25))
+    s.append(m21.note.Note("F4", quarterLength=0.25))
+    s.append(m21.note.Note("G4", quarterLength=0.50))
+    s.append(m21.note.Note("E4", quarterLength=0.50))
+
+    s = m21.stream.Stream()
+    s.append(m21.note.Note("A4", quarterLength=0.25))
+    s.append(m21.note.Note("B4", quarterLength=0.25))
+    s.append(m21.note.Note("C4", quarterLength=0.25))
+    s.append(m21.note.Note("D4", quarterLength=0.25))
+    s.append(m21.note.Note("E4", quarterLength=0.50))
+    s.append(m21.note.Note("C4", quarterLength=0.50))
+
     return s
+
+
+def load_motif_stream(path: str | Path) -> m21.stream.Stream:
+    """
+    Load a motif from a symbolic file such as MIDI or MusicXML.
+
+    The returned stream contains a flat sequence of notes/rests that can be
+    passed directly into realise.motif_from_stream().
+    """
+    src = Path(path)
+    if not src.exists():
+        raise FileNotFoundError(f"Motif file not found: {src}")
+
+    parsed = m21.converter.parse(str(src))
+
+    if getattr(parsed, "parts", None):
+        flat = parsed.parts[0].flatten().notesAndRests
+    else:
+        flat = parsed.flatten().notesAndRests
+
+    motif = m21.stream.Stream()
+    for el in flat:
+        if isinstance(el, (m21.note.Note, m21.note.Rest)):
+            motif.append(el)
+        elif isinstance(el, m21.chord.Chord):
+            # Keep the top note so polyphonic MIDI can still provide a simple motif.
+            motif.append(m21.note.Note(el.sortAscending().pitches[-1], quarterLength=el.quarterLength))
+
+    if not motif.notesAndRests:
+        raise ValueError(f"No note or rest events found in motif file: {src}")
+
+    return motif
 
 
 # ----------------------------
@@ -279,7 +325,7 @@ def generate_one(
         # True melody-only baseline: no structural events, so the infiller owns the whole timeline.
         events = []
 
-    # 2) Harmony plan (or disable)
+    # 2) Harmony plan
     if scfg.use_harmony:
         harm_model = models.harmony_minor if mode == "minor" else models.harmony_major
         func_plan, rn_plan = harmony_ngram.sample_harmony_plan(harm_model)
@@ -362,6 +408,7 @@ def generate_one(
     score = m21.stream.Score()
     score.insert(0.0, melody_part)
 
+    # Accompaniment rendering
     if scfg.use_accompaniment and scfg.use_harmony:
         section = accompaniment.SectionSpec(v_bars=2, f_bars=num_bars - 3, e_bars=1)
         style_plan = accompaniment.sample_style_plan(
@@ -383,10 +430,13 @@ def generate_one(
         acc_part.partName = "Accompaniment"
         score.insert(0.0, acc_part)
 
-    # instruments (optional convenience)
-    for p in score.parts:
+    # instruments
+    for i, p in enumerate(score.parts):
         try:
-            p.insert(0.0, m21.instrument.Harpsichord())
+            if i == 0:
+                p.insert(0.0, m21.instrument.Flute())
+            else:
+                p.insert(0.0, m21.instrument.Harpsichord())
         except Exception:
             pass
 

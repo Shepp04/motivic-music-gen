@@ -41,7 +41,7 @@ def load_corpus_ids(limit: int | None) -> list[str]:
 def process_piece(corpus_id: str, target_key: str | None = None) -> dict[str, Any]:
     """
     Parse a piece, analyse its (original) key, extract melody + harmony.
-    target_key is ignored (kept only so you don't have to change call sites).
+    target_key is ignored
     """
     score = m21.corpus.parse(corpus_id)
 

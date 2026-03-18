@@ -131,14 +131,6 @@ def apply_motif_token(base: Motif, tok: str) -> Motif:
 
 
 def fit_motif_to_duration(motif: Motif, target_units: int) -> Motif:
-    """
-    Safe fit: ensures sum(dur_units)==target_units and NEVER loops forever.
-
-    Policy:
-      - If target_units is smaller than the minimum possible (len(motif_nonzero)),
-        truncate the motif to fit (keep earliest events).
-      - Otherwise do your scale+round, then adjust with bounded passes.
-    """
     if target_units <= 0:
         return []
 
@@ -150,7 +142,7 @@ def fit_motif_to_duration(motif: Motif, target_units: int) -> Motif:
     min_units = len(motif)
     if target_units < min_units:
         # Truncate to exactly target_units events of 1 unit each.
-        # Keep first (target_units) events; if you prefer “keep shape”, keep first events.
+        # Keep first (target_units) events
         trimmed = motif[:target_units]
         return [MotifEvent(ev.deg, ev.oct, 1, ev.is_rest) for ev in trimmed]
 

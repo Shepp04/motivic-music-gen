@@ -1,5 +1,4 @@
-Repo summary (structured, separate to report)
-
+Repo summary
 1) High-level intro
 	•	Problem: Generate short symbolic pieces that feel structurally coherent in a Baroque/early-Classical idiom by explicitly modelling motivic development (repeat/transform a motif across a phrase), not just local note-to-note plausibility.
 	•	Core idea: A top-down planner + bottom-up realiser:
@@ -61,7 +60,7 @@ src/motifgen/realise.py
 	•	Applies motif transforms and fits blocks into scheduled windows.
 	•	Harmony-aware motif adjustments:
 	•	On strong onsets: prefer chord tones for the active RN.
-	•	In minor over V: apply raised-note rules (7th always; 6th conditional per your final rule).
+	•	In minor over V: apply raised-note rules (7th always; 6th conditional).
 	•	Converts token sequences → music21 parts with:
 	•	motif colour spans,
 	•	register smoothing (allow nearby octaves to reduce large leaps).

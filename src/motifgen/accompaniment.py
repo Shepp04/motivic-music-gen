@@ -36,8 +36,8 @@ class AccompConfig:
     # rhythmic density inside each half-bar (2 beats):
     # - ALBERTI uses 4 notes by default (quavers)
     # - ARP_SLOW uses 2 notes (crotchets)
-    # - ARP_FAST uses 8 notes (semiquavers if units_per_beat=2 and you allow 0.25 dur)
-    arp_fast_notes_per_halfbar: int = 8
+    # - ARP_FAST uses 8 notes
+    arp_fast_notes_per_halfbar: int = 4
 
     part_name: str = "Accompaniment"
 

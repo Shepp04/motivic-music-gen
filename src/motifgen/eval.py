@@ -61,7 +61,6 @@ class CorpusStats:
     leap7_rate: float
     mean_abs_interval: float
     p95_abs_interval: float
-    # optional: rhythm distribution over token durations (ql)
     dur_hist_bins: Tuple[float, ...]
     dur_hist_probs: Tuple[float, ...]
 
@@ -487,10 +486,10 @@ def evaluate_piece(
     corpus: Optional[CorpusStats] = None,
 ) -> Tuple[Dict[str, Any], Optional[np.ndarray]]:
     """
-    Evaluate a single generated piece dict (your example format).
+    Evaluate a single generated piece dict
     Returns:
       - metrics dict (flat)
-      - SSM matrix (for plotting), optional
+      - SSM matrix (for plotting)
     """
     melody_tokens = tokens_strip_bar(piece["melody_tokens"])
     rn_plan = piece.get("rn_plan", [])
@@ -502,7 +501,6 @@ def evaluate_piece(
     system = piece.get("system", "unknown")
     seed = piece.get("seed", None)
 
-    # key: keep your current convention (C major / a minor)
     key_obj = m21.key.Key("a") if mode == "minor" else m21.key.Key("C")
 
     total_units = total_units_from_num_bars(num_bars, units_per_beat=units_per_beat, beats_per_bar=beats_per_bar)
@@ -720,10 +718,6 @@ def plot_metric_bars(
     plt.close()
 
 
-# ----------------------------
-# Script entry (optional)
-# ----------------------------
-
 def evaluate_from_files(
     *,
     generated_jsonl: str | Path,
@@ -733,7 +727,7 @@ def evaluate_from_files(
     cfg: Optional[EvalConfig] = None,
 ) -> None:
     """
-    Convenience: evaluate a jsonl of generated pieces (each line is a dict like your example).
+    Convenience: evaluate a jsonl of generated pieces
     """
     cfg = cfg or EvalConfig()
 

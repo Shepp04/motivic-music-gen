@@ -48,7 +48,6 @@ class SamplerConfig:
     # density: 0 -> sparse (more infill), 1 -> dense (more motif tokens)
     density: float = 0.5
 
-    # optional manual overrides (in units)
     min_gap_units: int = 0
     max_gap_units: Optional[int] = None
 
@@ -319,7 +318,7 @@ class PCFG:
         f_events_per_bar = 0.75 + 1.25 * density  # ~0.75..2.0
         emit_spread(v_end, f_end, f_toks, events_per_bar=f_events_per_bar)
 
-        # Pre-cadence epilog material (optional; still leaves space)
+        # Pre-cadence epilog material
         if cad_start > f_end:
             emit_with_gaps(f_end, cad_start, e_toks)
 
@@ -373,7 +372,7 @@ class PCFG:
 
 
 # ----------------------------
-# Grammar factory
+# Grammar
 # ----------------------------
 
 def make_grammar(density: float = 0.5) -> PCFG:
